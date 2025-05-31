@@ -9,6 +9,7 @@ class Preferences(BaseModel):
     interests: List[str]
     departure_airports: List[str]
     budget: float
+    trip_duration: int
 
 class UserInput(BaseModel):
     name: str
