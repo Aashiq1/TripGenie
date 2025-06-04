@@ -67,8 +67,16 @@ def plan_trip(users: List[UserInput]) -> dict:
     best_ranges = get_best_ranges(trip_data["date_to_users"], users)
 
     for trip_range in best_ranges:
+        # Convert date objects to strings for JSON serialization
+        trip_range["start_date"] = trip_range["start_date"].strftime("%Y-%m-%d")
+        trip_range["end_date"] = trip_range["end_date"].strftime("%Y-%m-%d")
+        trip_range["user_count"] = len(trip_range["users"])
+        
         # Calculate length of this proposed trip window
-        trip_length = (trip_range["end_date"] - trip_range["start_date"]).days + 1
+        from datetime import datetime
+        start_date = datetime.strptime(trip_range["start_date"], "%Y-%m-%d").date()
+        end_date = datetime.strptime(trip_range["end_date"], "%Y-%m-%d").date()
+        trip_length = (end_date - start_date).days + 1
 
         # Score all destinations for this trip length and group preferences
         ranked = sorted(

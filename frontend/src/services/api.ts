@@ -46,15 +46,40 @@ export const api = {
   },
 
   // Get group data
-  getGroup: async (): Promise<GroupInput> => {
-    const response = await apiClient.get('/inputs/group');
+  getGroup: async (groupCode?: string): Promise<GroupInput> => {
+    const params = groupCode ? { group_code: groupCode } : {};
+    const response = await apiClient.get('/inputs/group', { params });
     return response.data;
   },
 
   // Plan trip
-  planTrip: async (): Promise<TripPlan> => {
-    const response = await apiClient.post('/inputs/plan');
+  planTrip: async (groupCode?: string): Promise<TripPlan> => {
+    const params = groupCode ? { group_code: groupCode } : {};
+    const response = await apiClient.post('/inputs/plan', null, { params });
     return response.data;
+  },
+
+  // List all groups
+  listGroups: async (): Promise<{ groups: Array<{ group_code: string; user_count: number; users: string[] }> }> => {
+    const response = await apiClient.get('/inputs/groups');
+    return response.data;
+  },
+
+  // Clear group data
+  clearGroup: async (groupCode?: string): Promise<{ message: string }> => {
+    const params = groupCode ? { group_code: groupCode } : {};
+    const response = await apiClient.delete('/inputs/clear', { params });
+    // Clear localStorage if the group code matches or if no group code is specified
+    const storedGroupCode = localStorage.getItem('currentGroupCode');
+    if (!groupCode || storedGroupCode === groupCode) {
+      localStorage.removeItem('currentGroupCode');
+    }
+    return response.data;
+  },
+
+  // Clear current group from localStorage
+  clearCurrentGroup: (): void => {
+    localStorage.removeItem('currentGroupCode');
   },
 };
 

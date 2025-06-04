@@ -1,60 +1,118 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useForm } from 'react-hook-form';
-import { toast } from 'react-hot-toast';
 import { useNavigate } from 'react-router-dom';
 import { 
-  User, 
-  Heart, 
+  ArrowRight, 
+  ArrowLeft, 
+  CheckCircle,
+  User,
+  Heart,
   Calendar,
-  ArrowRight,
-  ArrowLeft,
-  CheckCircle
+  FileText,
+  Copy,
+  Check
 } from 'lucide-react';
-import { UserInput } from '../../types';
-import { api } from '../../services/api';
 import PersonalInfoStep from '../forms/PersonalInfoStep';
 import PreferencesStep from '../forms/PreferencesStep';
 import AvailabilityStep from '../forms/AvailabilityStep';
 import ReviewStep from '../forms/ReviewStep';
+import { api } from '../../services/api';
+import { UserInput } from '../../types';
+
+const steps = [
+  { id: 1, title: 'Personal Info', description: 'Basic details', icon: User },
+  { id: 2, title: 'Preferences', description: 'Trip vibes & budget', icon: Heart },
+  { id: 3, title: 'Availability', description: 'When can you go?', icon: Calendar },
+  { id: 4, title: 'Review', description: 'Confirm details', icon: FileText }
+];
 
 const JoinTripPage: React.FC = () => {
   const [currentStep, setCurrentStep] = useState(1);
   const [isLoading, setIsLoading] = useState(false);
+  const [groupCode, setGroupCode] = useState<string>('');
+  const [copied, setCopied] = useState(false);
   const navigate = useNavigate();
-  
-  const { 
-    register, 
-    handleSubmit, 
-    watch, 
-    setValue, 
-    formState: { errors },
-    getValues
-  } = useForm<UserInput>();
 
-  const steps = [
-    { id: 1, title: 'Personal Info', icon: User, description: 'Tell us about yourself' },
-    { id: 2, title: 'Preferences', icon: Heart, description: 'What kind of trip do you want?' },
-    { id: 3, title: 'Availability', icon: Calendar, description: 'When can you travel?' },
-    { id: 4, title: 'Review', icon: CheckCircle, description: 'Confirm your details' },
-  ];
+  const { register, handleSubmit, formState: { errors }, watch, setValue, getValues } = useForm<UserInput>();
+
+  // Watch all form values to trigger re-renders when they change
+  const watchedValues = watch();
+
+  useEffect(() => {
+    // Get group code from localStorage and verify it exists
+    const storedGroupCode = localStorage.getItem('currentGroupCode');
+    if (storedGroupCode) {
+      // Verify the group exists
+      api.getGroup(storedGroupCode)
+        .then(() => {
+          setGroupCode(storedGroupCode);
+        })
+        .catch((error) => {
+          console.error('Error verifying group:', error);
+          // If group doesn't exist, clear localStorage and redirect to home
+          api.clearCurrentGroup();
+          navigate('/');
+        });
+    } else {
+      // If no group code, redirect to home
+      navigate('/');
+    }
+  }, [navigate]);
+
+  // Set default form values
+  useEffect(() => {
+    // Set budget defaults
+    setValue('preferences.budget.min', 300);
+    setValue('preferences.budget.max', 800);
+    setValue('preferences.trip_duration', 4);
+    
+    // Set default vibes, interests, airports
+    setValue('preferences.vibe', ['relaxing']);
+    setValue('preferences.interests', ['food']);
+    setValue('preferences.departure_airports', ['LAX']);
+    
+    // Set default availability dates
+    const today = new Date();
+    const nextWeek = new Date(today);
+    nextWeek.setDate(today.getDate() + 7);
+    const twoWeeksLater = new Date(today);
+    twoWeeksLater.setDate(today.getDate() + 14);
+    
+    const defaultDates = [
+      nextWeek.toISOString().split('T')[0],
+      twoWeeksLater.toISOString().split('T')[0]
+    ];
+    setValue('availability.dates', defaultDates);
+  }, [setValue]);
+
+  const copyGroupCode = () => {
+    navigator.clipboard.writeText(groupCode);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  };
 
   const onSubmit = async (data: UserInput) => {
     setIsLoading(true);
     try {
-      await api.submitUser(data);
-      toast.success('Successfully joined the trip! 🎉');
+      // Include group code in the submission
+      const submissionData = {
+        ...data,
+        group_code: groupCode
+      };
+      
+      await api.submitUser(submissionData);
       navigate('/dashboard');
     } catch (error) {
-      toast.error('Failed to submit your information. Please try again.');
-      console.error('Submission error:', error);
+      console.error('Error submitting user input:', error);
+      alert('There was an error submitting your information. Please try again.');
     } finally {
       setIsLoading(false);
     }
   };
 
   const nextStep = () => {
-    if (currentStep < steps.length) {
+    if (currentStep < steps.length && canProceed()) {
       setCurrentStep(currentStep + 1);
     }
   };
@@ -81,20 +139,16 @@ const JoinTripPage: React.FC = () => {
   };
 
   const canProceed = () => {
-    const values = getValues();
+    const values = watchedValues;
+    
     switch (currentStep) {
       case 1:
-        return values.name && values.email && values.phone;
+        // Only validate step 1 - personal information is required
+        return !!(values.name && values.email && values.phone);
       case 2:
-        return values.preferences?.vibe?.length > 0 && 
-               values.preferences?.interests?.length > 0 &&
-               values.preferences?.departure_airports?.length > 0 &&
-               values.preferences?.budget?.min &&
-               values.preferences?.budget?.max &&
-               values.preferences?.trip_duration;
       case 3:
-        return values.availability?.dates?.length > 0;
       case 4:
+        // Steps 2-4 always allow proceeding since we have defaults
         return true;
       default:
         return false;
@@ -104,12 +158,12 @@ const JoinTripPage: React.FC = () => {
   return (
     <div className="min-h-screen pt-20 pb-12">
       <div className="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8">
-        {/* Header */}
+        {/* Header with Group Code */}
         <motion.div
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.6 }}
-          className="text-center mb-12"
+          className="text-center mb-8"
         >
           <h1 className="text-4xl md:text-5xl font-bold mb-4 text-white">
             Join the 
@@ -117,9 +171,29 @@ const JoinTripPage: React.FC = () => {
               {" "}Adventure
             </span>
           </h1>
-          <p className="text-xl text-gray-300 max-w-2xl mx-auto">
+          <p className="text-xl text-gray-300 max-w-2xl mx-auto mb-6">
             Share your preferences and let us plan the perfect group trip for everyone.
           </p>
+          
+          {/* Group Code Display */}
+          {groupCode && (
+            <motion.div
+              initial={{ opacity: 0, scale: 0.9 }}
+              animate={{ opacity: 1, scale: 1 }}
+              className="inline-flex items-center space-x-3 bg-dark-700 rounded-xl px-6 py-3 mb-4"
+            >
+              <span className="text-gray-300">Group Code:</span>
+              <code className="text-primary-400 font-bold text-lg">{groupCode}</code>
+              <motion.button
+                onClick={copyGroupCode}
+                whileHover={{ scale: 1.05 }}
+                whileTap={{ scale: 0.95 }}
+                className="text-gray-400 hover:text-white transition-colors"
+              >
+                {copied ? <Check className="w-4 h-4" /> : <Copy className="w-4 h-4" />}
+              </motion.button>
+            </motion.div>
+          )}
         </motion.div>
 
         {/* Progress Steps */}

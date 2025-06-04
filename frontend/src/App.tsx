@@ -3,7 +3,7 @@ import { BrowserRouter as Router, Routes, Route } from 'react-router-dom';
 import { Toaster } from 'react-hot-toast';
 import HomePage from './components/pages/HomePage';
 import JoinTripPage from './components/pages/JoinTripPage';
-import GroupDashboard from './components/pages/GroupDashboard';
+import DashboardPage from './components/pages/DashboardPage';
 import TripPlanPage from './components/pages/TripPlanPage';
 import Navbar from './components/common/Navbar';
 import BackgroundEffects from './components/common/BackgroundEffects';
@@ -23,7 +23,7 @@ function App() {
             <Routes>
               <Route path="/" element={<HomePage />} />
               <Route path="/join" element={<JoinTripPage />} />
-              <Route path="/dashboard" element={<GroupDashboard />} />
+              <Route path="/dashboard" element={<DashboardPage />} />
               <Route path="/plan" element={<TripPlanPage />} />
             </Routes>
           </main>

@@ -1,5 +1,5 @@
 from pydantic import BaseModel
-from typing import List, Literal
+from typing import List, Literal, Optional
 
 class Availability(BaseModel):
     """
@@ -48,12 +48,14 @@ class UserInput(BaseModel):
         phone (str): The user's phone number.
         preferences (Preferences): The user's trip preferences.
         availability (Availability): The user's available travel dates.
+        group_code (Optional[str]): The group code this user belongs to.
     """
     name: str
     email: str
     phone: str
     preferences: Preferences
     availability: Availability
+    group_code: Optional[str] = None
 
 class GroupInput(BaseModel):
     """
