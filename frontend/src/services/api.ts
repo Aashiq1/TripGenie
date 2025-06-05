@@ -1,5 +1,6 @@
 import axios from 'axios';
 import { UserInput, GroupInput, TripPlan, APIResponse } from '../types';
+import { LoginCredentials, RegisterCredentials, User, UserTrip } from '../types/auth';
 
 const API_BASE_URL = process.env.REACT_APP_API_URL || 'http://localhost:8000';
 
@@ -10,10 +11,15 @@ const apiClient = axios.create({
   },
 });
 
-// Add request interceptor for logging
+// Add request interceptor for logging and auth token
 apiClient.interceptors.request.use(
   (config) => {
     console.log(`Making ${config.method?.toUpperCase()} request to ${config.url}`);
+    // Add auth token if available
+    const token = localStorage.getItem('auth_token');
+    if (token) {
+      config.headers.Authorization = `Bearer ${token}`;
+    }
     return config;
   },
   (error) => {
@@ -80,6 +86,39 @@ export const api = {
   // Clear current group from localStorage
   clearCurrentGroup: (): void => {
     localStorage.removeItem('currentGroupCode');
+  },
+
+  // Auth endpoints
+  login: async (credentials: LoginCredentials): Promise<{ user: User; token: string }> => {
+    const formData = new URLSearchParams();
+    formData.append('username', credentials.email);  // OAuth2 expects 'username' field
+    formData.append('password', credentials.password);
+    
+    const response = await apiClient.post('/auth/login', formData, {
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
+      },
+    });
+    return response.data;
+  },
+
+  register: async (credentials: RegisterCredentials): Promise<{ user: User; token: string }> => {
+    const response = await apiClient.post('/auth/register', credentials);
+    return response.data;
+  },
+
+  logout: async (): Promise<void> => {
+    await apiClient.post('/auth/logout');
+  },
+
+  getCurrentUser: async (): Promise<{ user: User }> => {
+    const response = await apiClient.get('/auth/me');
+    return response.data;
+  },
+
+  getUserTrips: async (): Promise<{ trips: UserTrip[] }> => {
+    const response = await apiClient.get('/auth/trips');
+    return { trips: response.data };
   },
 };
 

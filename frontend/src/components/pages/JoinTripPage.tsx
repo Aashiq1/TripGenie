@@ -40,20 +40,10 @@ const JoinTripPage: React.FC = () => {
   const watchedValues = watch();
 
   useEffect(() => {
-    // Get group code from localStorage and verify it exists
+    // Get group code from localStorage
     const storedGroupCode = localStorage.getItem('currentGroupCode');
     if (storedGroupCode) {
-      // Verify the group exists
-      api.getGroup(storedGroupCode)
-        .then(() => {
-          setGroupCode(storedGroupCode);
-        })
-        .catch((error) => {
-          console.error('Error verifying group:', error);
-          // If group doesn't exist, clear localStorage and redirect to home
-          api.clearCurrentGroup();
-          navigate('/');
-        });
+      setGroupCode(storedGroupCode);
     } else {
       // If no group code, redirect to home
       navigate('/');

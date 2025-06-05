@@ -1,19 +1,22 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from app.api import inputs
+from app.api import inputs, auth
 
 app = FastAPI()
 
-# Basic CORS setup (use stricter config in prod)
+# Add CORS middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["http://localhost:3000"],  # Frontend URL
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-app.include_router(inputs.router)
+# Include routers
+app.include_router(inputs.router, prefix="/inputs", tags=["inputs"])
+app.include_router(auth.router, prefix="/auth", tags=["auth"])
 
 @app.get("/ping")
-def ping():
+async def ping():
     return {"message": "pong"}

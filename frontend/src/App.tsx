@@ -1,5 +1,5 @@
 import React from 'react';
-import { BrowserRouter as Router, Routes, Route } from 'react-router-dom';
+import { BrowserRouter as Router, Routes, Route, Navigate, useLocation } from 'react-router-dom';
 import { Toaster } from 'react-hot-toast';
 import HomePage from './components/pages/HomePage';
 import JoinTripPage from './components/pages/JoinTripPage';
@@ -7,6 +7,35 @@ import DashboardPage from './components/pages/DashboardPage';
 import TripPlanPage from './components/pages/TripPlanPage';
 import Navbar from './components/common/Navbar';
 import BackgroundEffects from './components/common/BackgroundEffects';
+import LoginPage from './components/pages/LoginPage';
+import RegisterPage from './components/pages/RegisterPage';
+import TripsDashboardPage from './components/pages/TripsDashboardPage';
+import { api } from './services/api';
+
+// Protected route wrapper component
+const ProtectedRoute: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+  const location = useLocation();
+  const token = localStorage.getItem('auth_token');
+
+  if (!token) {
+    // Redirect to login but save the attempted url
+    return <Navigate to="/login" state={{ from: location }} replace />;
+  }
+
+  return <>{children}</>;
+};
+
+// Public route wrapper component (redirects to trips if already logged in)
+const PublicRoute: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+  const token = localStorage.getItem('auth_token');
+
+  if (token) {
+    // Redirect to trips dashboard if already logged in
+    return <Navigate to="/trips" replace />;
+  }
+
+  return <>{children}</>;
+};
 
 function App() {
   return (
@@ -21,10 +50,54 @@ function App() {
           
           <main>
             <Routes>
+              {/* Public routes */}
               <Route path="/" element={<HomePage />} />
               <Route path="/join" element={<JoinTripPage />} />
-              <Route path="/dashboard" element={<DashboardPage />} />
-              <Route path="/plan" element={<TripPlanPage />} />
+              <Route 
+                path="/login" 
+                element={
+                  <PublicRoute>
+                    <LoginPage />
+                  </PublicRoute>
+                } 
+              />
+              <Route 
+                path="/register" 
+                element={
+                  <PublicRoute>
+                    <RegisterPage />
+                  </PublicRoute>
+                } 
+              />
+
+              {/* Protected routes */}
+              <Route
+                path="/trips"
+                element={
+                  <ProtectedRoute>
+                    <TripsDashboardPage />
+                  </ProtectedRoute>
+                }
+              />
+              <Route
+                path="/dashboard"
+                element={
+                  <ProtectedRoute>
+                    <DashboardPage />
+                  </ProtectedRoute>
+                }
+              />
+              <Route
+                path="/plan"
+                element={
+                  <ProtectedRoute>
+                    <TripPlanPage />
+                  </ProtectedRoute>
+                }
+              />
+
+              {/* Catch all route - redirect to home */}
+              <Route path="*" element={<Navigate to="/" replace />} />
             </Routes>
           </main>
         </div>

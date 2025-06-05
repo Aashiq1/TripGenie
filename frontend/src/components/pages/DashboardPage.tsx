@@ -14,6 +14,7 @@ import {
 } from 'lucide-react';
 import { api } from '../../services/api';
 import { GroupInput, TripPlan } from '../../types';
+import { toast } from 'react-hot-toast';
 
 const DashboardPage: React.FC = () => {
   const [groupData, setGroupData] = useState<GroupInput | null>(null);
@@ -25,14 +26,24 @@ const DashboardPage: React.FC = () => {
   const navigate = useNavigate();
 
   useEffect(() => {
-    // Get group code from localStorage
-    const storedGroupCode = localStorage.getItem('currentGroupCode');
-    if (storedGroupCode) {
-      setGroupCode(storedGroupCode);
-      fetchGroupData(storedGroupCode);
+    // Get group code from URL query params first
+    const params = new URLSearchParams(window.location.search);
+    const urlGroupCode = params.get('group_code');
+    
+    if (urlGroupCode) {
+      setGroupCode(urlGroupCode);
+      localStorage.setItem('currentGroupCode', urlGroupCode);
+      fetchGroupData(urlGroupCode);
     } else {
-      // If no group code, redirect to home
-      navigate('/');
+      // Fallback to localStorage
+      const storedGroupCode = localStorage.getItem('currentGroupCode');
+      if (storedGroupCode) {
+        setGroupCode(storedGroupCode);
+        fetchGroupData(storedGroupCode);
+      } else {
+        // If no group code anywhere, redirect to trips
+        navigate('/trips');
+      }
     }
   }, [navigate]);
 
@@ -42,11 +53,21 @@ const DashboardPage: React.FC = () => {
       const currentGroupCode = code || groupCode;
       const data = await api.getGroup(currentGroupCode);
       setGroupData(data);
-    } catch (error) {
+    } catch (error: any) {
       console.error('Error fetching group data:', error);
-      // If we can't fetch the group data, clear localStorage and redirect to home
+      // Clear group code from localStorage on any error
       api.clearCurrentGroup();
-      navigate('/');
+      
+      if (error.response?.status === 403) {
+        toast.error('You are not a member of this trip');
+      } else if (error.response?.status === 404) {
+        toast.error('Trip not found');
+      } else {
+        toast.error('Failed to load trip data');
+      }
+      
+      // Redirect to trips page instead of home
+      navigate('/trips');
     } finally {
       setLoading(false);
     }
@@ -264,33 +285,27 @@ const DashboardPage: React.FC = () => {
               <div className="mb-8">
                 <h3 className="text-lg font-semibold text-white mb-4">Best Available Dates</h3>
                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                  {tripPlan.best_date_ranges.map((dateRange: any, index: number) => (
+                  {tripPlan.best_date_ranges.map((dateRange, index) => (
                     <div key={index} className="bg-dark-700 rounded-xl p-4 border border-primary-500/30">
                       <div className="text-center">
                         <Calendar className="w-8 h-8 text-primary-400 mx-auto mb-2" />
                         <p className="text-white font-semibold">{dateRange.start_date} to {dateRange.end_date}</p>
-                        <p className="text-gray-400 text-sm">{dateRange.available_users || 'All'} members available</p>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
-
-            {/* Destination Recommendations */}
-            {(tripPlan as any).destination_scores && (tripPlan as any).destination_scores.length > 0 && (
-              <div className="mb-8">
-                <h3 className="text-lg font-semibold text-white mb-4">Recommended Destinations</h3>
-                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                  {(tripPlan as any).destination_scores.slice(0, 6).map((dest: any, index: number) => (
-                    <div key={dest.destination} className="bg-dark-700 rounded-xl p-4 border border-accent-cyan/30">
-                      <div className="text-center">
-                        <MapPin className="w-8 h-8 text-accent-cyan mx-auto mb-2" />
-                        <h4 className="text-white font-semibold">{dest.destination}</h4>
-                        <div className="flex items-center justify-center mt-2">
-                          <Star className="w-4 h-4 text-accent-amber mr-1" />
-                          <span className="text-accent-amber font-semibold">{dest.score?.toFixed(1) || 'N/A'}</span>
-                        </div>
+                        <p className="text-gray-400 text-sm">{dateRange.user_count} members available</p>
+                        
+                        {/* Destinations for this date range */}
+                        {dateRange.destinations && dateRange.destinations.length > 0 && (
+                          <div className="mt-4 pt-4 border-t border-dark-600">
+                            <p className="text-gray-400 text-sm mb-2">Top Destinations:</p>
+                            <div className="space-y-2">
+                              {dateRange.destinations.map((dest, idx) => (
+                                <div key={idx} className="flex items-center justify-between text-sm">
+                                  <span className="text-white">{dest.name}</span>
+                                  <span className="text-accent-amber">Score: {dest.score}</span>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        )}
                       </div>
                     </div>
                   ))}
@@ -305,32 +320,43 @@ const DashboardPage: React.FC = () => {
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                   <div>
                     <h4 className="text-accent-emerald font-semibold mb-2">Budget Range</h4>
-                    <p className="text-white">${(tripPlan.group_profile as any).budget_range?.min || 'N/A'} - ${(tripPlan.group_profile as any).budget_range?.max || 'N/A'}</p>
+                    <p className="text-white">${tripPlan.group_profile.budget_min} - ${tripPlan.group_profile.budget_max}</p>
+                    <p className="text-gray-400 text-sm">Target: ${tripPlan.group_profile.budget_target}</p>
                   </div>
                   <div>
-                    <h4 className="text-accent-cyan font-semibold mb-2">Trip Duration</h4>
-                    <p className="text-white">{(tripPlan.group_profile as any).trip_duration || 'N/A'} days</p>
-                  </div>
-                  <div>
-                    <h4 className="text-accent-purple font-semibold mb-2">Group Vibes</h4>
+                    <h4 className="text-accent-cyan font-semibold mb-2">Group Vibes</h4>
                     <div className="flex flex-wrap gap-2">
-                      {((tripPlan.group_profile as any).common_vibes || []).map((vibe: string) => (
-                        <span key={vibe} className="px-3 py-1 bg-accent-purple/20 text-accent-purple rounded-lg text-sm">
-                          {vibe}
+                      {Object.entries(tripPlan.group_profile.vibes).map(([vibe, count]) => (
+                        <span key={vibe} className="px-3 py-1 bg-accent-cyan/20 text-accent-cyan rounded-lg text-sm">
+                          {vibe} ({count})
                         </span>
                       ))}
                     </div>
                   </div>
                   <div>
-                    <h4 className="text-accent-amber font-semibold mb-2">Common Interests</h4>
+                    <h4 className="text-accent-purple font-semibold mb-2">Common Interests</h4>
                     <div className="flex flex-wrap gap-2">
-                      {((tripPlan.group_profile as any).common_interests || []).map((interest: string) => (
-                        <span key={interest} className="px-3 py-1 bg-accent-amber/20 text-accent-amber rounded-lg text-sm">
-                          {interest}
+                      {Object.entries(tripPlan.group_profile.interests).map(([interest, count]) => (
+                        <span key={interest} className="px-3 py-1 bg-accent-purple/20 text-accent-purple rounded-lg text-sm">
+                          {interest} ({count})
                         </span>
                       ))}
                     </div>
                   </div>
+                </div>
+              </div>
+            )}
+
+            {/* Common Dates */}
+            {tripPlan.common_dates && tripPlan.common_dates.length > 0 && (
+              <div className="mt-8 bg-dark-700 rounded-xl p-6 border border-dark-600">
+                <h3 className="text-lg font-semibold text-white mb-4">Dates All Members Can Attend</h3>
+                <div className="flex flex-wrap gap-2">
+                  {tripPlan.common_dates.map((date, index) => (
+                    <span key={index} className="px-3 py-1 bg-accent-emerald/20 text-accent-emerald rounded-lg text-sm">
+                      {date}
+                    </span>
+                  ))}
                 </div>
               </div>
             )}
