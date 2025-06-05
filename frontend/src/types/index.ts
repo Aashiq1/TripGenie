@@ -29,19 +29,32 @@ export interface GroupInput {
   users: UserInput[];
 }
 
+export interface Destination {
+  name: string;
+  score: number;
+}
+
+export interface DateRange {
+  start_date: string;
+  end_date: string;
+  user_count: number;
+  users: string[];
+  destinations: Destination[];
+}
+
+export interface GroupProfile {
+  vibes: { [key: string]: number };
+  interests: { [key: string]: number };
+  budget_target: number;
+  budget_min: number;
+  budget_max: number;
+}
+
 export interface TripPlan {
-  best_dates: string[];
-  available_users: string[];
-  group_preferences: {
-    common_vibes: Vibe[];
-    common_interests: string[];
-    budget_range: Budget;
-    duration: number;
-  };
-  recommendations: {
-    destinations: string[];
-    activities: string[];
-  };
+  best_date_ranges: DateRange[];
+  date_to_users_count: { [key: string]: number };
+  common_dates: string[];
+  group_profile: GroupProfile;
 }
 
 // Form state types for multi-step form

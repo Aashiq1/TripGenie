@@ -13,7 +13,7 @@ def to_date(date_str: str) -> datetime.date:
     Returns:
         datetime.date: The corresponding date object.
     """
-    return datetime.strptime(date_str, "%Y-%m-%d")
+    return datetime.datetime.strptime(date_str, "%Y-%m-%d").date()
 
 
 def prepare_ai_input(users: List[UserInput]) -> dict:
