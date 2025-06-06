@@ -114,7 +114,7 @@ class FlightAgent:
                 }
             ]
             
-            budget_max = state["budget_max"] * 0.4
+            budget_max = state["budget_max"] * 0.5  # Allow 50% of budget for flights
             affordable_flights = [f for f in flights if f["price"] <= budget_max]
             
             flight_results[destination] = {
@@ -157,7 +157,7 @@ class HotelAgent:
                 }
             ]
             
-            budget_per_night = (state["budget_max"] * 0.3) / 4
+            budget_per_night = (state["budget_max"] * 0.4) / 3  # Allow 40% of budget for 3 nights
             affordable_hotels = [h for h in hotels if h["price_per_night"] <= budget_per_night]
             
             hotel_results[destination] = {
@@ -252,12 +252,15 @@ class LangGraphTravelSystem:
         print("🚀 Multi-Agent System Starting...")
         
         # Initialize state
+        budget_min = group_profile.get("group_min", group_profile.get("budget_min", 300))
+        budget_max = group_profile.get("group_max", group_profile.get("budget_max", 800))
+        
         state = TravelPlanState(
             user_count=len(users),
-            budget_min=group_profile.get("budget_min", 0),
-            budget_max=group_profile.get("budget_max", 1000),
-            interests=list(group_profile.get("interests", {}).keys()),
-            vibes=list(group_profile.get("vibes", {}).keys()),
+            budget_min=budget_min,
+            budget_max=budget_max,
+            interests=list(group_profile.get("common_interests", group_profile.get("interests", {})).keys()),
+            vibes=list(group_profile.get("common_vibes", group_profile.get("vibes", {})).keys()),
             research_results={},
             flight_results={},
             hotel_results={},

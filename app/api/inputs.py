@@ -70,7 +70,7 @@ async def plan_trip_endpoint(group_code: Optional[str] = Query(None, description
             raise HTTPException(status_code=400, detail=f"No users found in group {group_code}")
         
         # Pass the users list directly to run_plan_trip
-        return run_plan_trip(users)
+        return await run_plan_trip(users)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to generate trip plan: {str(e)}")
 
