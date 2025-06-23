@@ -31,12 +31,21 @@ class Preferences(BaseModel):
         departure_airports (List[str]): List of airport codes the user can depart from.
         budget (Budget): The user's budget range.
         trip_duration (int): Desired trip duration in number of days.
+        travel_style (str): Travel style preference - budget, balanced, or luxury.
+        pace (str): Travel pace preference - chill, balanced, or fast.
+        additional_info (Optional[str]): Optional free-text description for NLP processing.
     """
     vibe: List[Literal["relaxing", "adventurous", "party", "culture"]]
     interests: List[str]
     departure_airports: List[str]
     budget: Budget
     trip_duration: int
+    travel_style: Literal["budget", "balanced", "luxury"]
+    pace: Literal["chill", "balanced", "fast"]
+    accommodation_preference: Literal["budget", "standard", "luxury"] = "standard"
+    room_sharing: Literal["private", "share", "any"] = "any" 
+    dietary_restrictions: Optional[List[str]] = None
+    additional_info: Optional[str] = None
 
 class UserInput(BaseModel):
     """
@@ -46,6 +55,7 @@ class UserInput(BaseModel):
         name (str): The user's full name.
         email (str): The user's email address.
         phone (str): The user's phone number.
+        role (str): User role - "creator" or "member".
         preferences (Preferences): The user's trip preferences.
         availability (Availability): The user's available travel dates.
         group_code (Optional[str]): The group code this user belongs to.
@@ -53,9 +63,25 @@ class UserInput(BaseModel):
     name: str
     email: str
     phone: str
+    role: Optional[Literal["creator", "member"]] = "member"
     preferences: Preferences
     availability: Availability
     group_code: Optional[str] = None
+
+class TripGroup(BaseModel):
+    """
+    Represents a trip group with destinations set by the creator.
+    
+    Attributes:
+        group_code (str): Unique identifier for the group.
+        destinations (List[str]): 1-3 destinations chosen by the trip creator.
+        creator_email (str): Email of the user who created the group.
+        created_at (str): Timestamp when the group was created.
+    """
+    group_code: str
+    destinations: List[str]  # 1-3 destinations set by creator
+    creator_email: str
+    created_at: str
 
 class GroupInput(BaseModel):
     """
@@ -63,5 +89,7 @@ class GroupInput(BaseModel):
 
     Attributes:
         users (List[UserInput]): A list of all users participating in the group trip.
+        group_info (Optional[TripGroup]): Information about the group and destinations.
     """
     users: List[UserInput]
+    group_info: Optional[TripGroup] = None

@@ -7,11 +7,12 @@ import json
 import os
 from typing import Dict, List, Optional
 from datetime import datetime
-from app.models.group_inputs import UserInput
+from app.models.group_inputs import UserInput, TripGroup
 
 # Storage directory
 STORAGE_DIR = "data"
 GROUPS_FILE = os.path.join(STORAGE_DIR, "groups.json")
+TRIP_GROUPS_FILE = os.path.join(STORAGE_DIR, "trip_groups.json")
 
 def ensure_storage_dir():
     """Ensure storage directory exists"""
@@ -90,8 +91,49 @@ def clear_group_data(group_code: str):
         del groups[group_code]
         save_groups(groups)
 
+def load_trip_groups() -> Dict[str, dict]:
+    """Load all trip groups from storage"""
+    ensure_storage_dir()
+    if os.path.exists(TRIP_GROUPS_FILE):
+        try:
+            with open(TRIP_GROUPS_FILE, 'r') as f:
+                return json.load(f)
+        except (json.JSONDecodeError, FileNotFoundError):
+            return {}
+    return {}
+
+def save_trip_groups(trip_groups: Dict[str, dict]):
+    """Save all trip groups to storage"""
+    ensure_storage_dir()
+    with open(TRIP_GROUPS_FILE, 'w') as f:
+        json.dump(trip_groups, f, indent=2)
+
+def create_trip_group(trip_group: TripGroup) -> TripGroup:
+    """Create a new trip group"""
+    trip_groups = load_trip_groups()
+    
+    # Convert TripGroup to dict for storage
+    trip_group_dict = trip_group.model_dump()
+    
+    # Store the trip group
+    trip_groups[trip_group.group_code] = trip_group_dict
+    
+    save_trip_groups(trip_groups)
+    return trip_group
+
+def get_trip_group(group_code: str) -> Optional[TripGroup]:
+    """Get a specific trip group"""
+    trip_groups = load_trip_groups()
+    group_data = trip_groups.get(group_code)
+    
+    if group_data:
+        return TripGroup(**group_data)
+    return None
+
 def clear_all_data():
     """Clear all data"""
     ensure_storage_dir()
     if os.path.exists(GROUPS_FILE):
         os.remove(GROUPS_FILE)
+    if os.path.exists(TRIP_GROUPS_FILE):
+        os.remove(TRIP_GROUPS_FILE)

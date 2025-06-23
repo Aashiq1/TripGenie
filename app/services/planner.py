@@ -1,176 +1,179 @@
+# Updated planner.py with proper booking link integration
+
 from app.models.group_inputs import UserInput
 from app.services.ai_input import prepare_ai_input, get_best_ranges, get_group_preferences
-from typing import List
-import asyncio
-import os
-try:
-    import openai
-    import anthropic
-    from app.services.langgraph_agents import langgraph_system
-    LANGGRAPH_AVAILABLE = True
-    OPENAI_AVAILABLE = True
-except ImportError:
-    LANGGRAPH_AVAILABLE = False
-    try:
-        import openai
-        import anthropic
-        OPENAI_AVAILABLE = True
-    except ImportError:
-        OPENAI_AVAILABLE = False
+from app.services.langchain_travel_agent import travel_agent
+from app.services.booking_integration import get_all_booking_links  # NEW IMPORT
+from typing import List, Dict, Any
+import json
 
-async def simple_ai_recommendations(group_profile: dict, users: List[UserInput]) -> List[dict]:
-    """Generate AI recommendations using available AI APIs"""
-    if not OPENAI_AVAILABLE:
-        return []
+# === HELPER FUNCTIONS ===
+
+def build_flight_requests_from_airports(airport_groups: Dict[str, List], destinations: List[str], departure_date: str, return_date: str) -> List[Dict]:
+    """Convert airport groups from ai_input into flight request format."""
+    flight_groups = []
     
-    try:
-        # Create a simple prompt for AI destination recommendations
-        preferences = group_profile.get("common_interests", [])
-        vibes = group_profile.get("common_vibes", [])
-        budget_range = f"${group_profile.get('group_min', 300)}-${group_profile.get('group_max', 800)}"
-        
-        prompt = f"""
-        Generate 3 travel destination recommendations for a group with these preferences:
-        - Interests: {', '.join(preferences)}
-        - Vibes: {', '.join(vibes)}
-        - Budget: {budget_range} per day
-        - Group size: {len(users)} people
-        
-        For each destination, provide:
-        1. Destination name
-        2. Match score (0-100)
-        3. Estimated daily cost
-        4. Brief reasoning
-        
-        Format as JSON array.
-        """
-        
-        # Try OpenAI first
-        client = openai.OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-        response = client.chat.completions.create(
-            model="gpt-3.5-turbo",
-            messages=[{"role": "user", "content": prompt}],
-            max_tokens=500
-        )
-        
-        # Parse the response and return recommendations
-        content = response.choices[0].message.content
-        
-        # Simple AI-generated recommendations
-        return [
-            {
-                "name": "San Diego, CA",
-                "score": 88,
-                "estimated_cost": 450,
-                "reasoning": "Great beaches, outdoor activities, perfect for groups",
-                "ai_generated": True
-            },
-            {
-                "name": "Austin, TX", 
-                "score": 85,
-                "estimated_cost": 400,
-                "reasoning": "Vibrant music scene, great food, budget-friendly",
-                "ai_generated": True
-            },
-            {
-                "name": "Portland, OR",
-                "score": 82,
-                "estimated_cost": 380,
-                "reasoning": "Unique culture, food scene, outdoor access",
-                "ai_generated": True
-            }
-        ]
-    except Exception as e:
-        print(f"AI recommendation failed: {e}")
-        return []
+    for airport, users_info in airport_groups.items():
+        flight_groups.append({
+            "departure_city": airport,
+            "passenger_count": len(users_info),
+            "destinations": destinations,
+            "departure_date": departure_date,
+            "return_date": return_date,
+            "passengers": [user["email"] for user in users_info],
+            "passenger_names": [user["name"] for user in users_info]
+        })
+    
+    return flight_groups
+
+# === MAIN PLANNER ===
 
 async def plan_trip(users: List[UserInput]) -> dict:
-    """
-    Generates an AI-powered trip plan using LangGraph multi-agent system when available.
-    
-    Priority:
-    1. LangGraph Multi-Agent System (ResearchAgent, FlightAgent, HotelAgent, CoordinatorAgent)
-    2. Simple OpenAI/Anthropic AI recommendations
-    3. Basic fallback system
-
-    Args:
-        users (List[UserInput]): List of user input data with preferences and availability.
-
-    Returns:
-        dict: Trip plan with multi-agent AI recommendations when possible
-    """
-    
-    # Get group preferences using existing logic
+    # All data aggregation is handled by ai_input.py
     group_profile = get_group_preferences(users)
-    
-    # Prepare availability data 
     trip_data = prepare_ai_input(users)
-    
-    # Get best date ranges
     best_ranges = get_best_ranges(trip_data["date_to_users"], users)
+
+    if not best_ranges:
+        return {"error": "No overlapping availability found."}
+
+    # Check for critical conflicts (already detected by ai_input.py)
+    if group_profile.get("conflicts"):
+        print("⚠️ Group conflicts detected:")
+        for conflict in group_profile["conflicts"]:
+            print(f"  - {conflict}")
+
+    # Use the first valid range
+    departure_date = best_ranges[0]["start_date"].strftime("%Y-%m-%d")
+    return_date = best_ranges[0]["end_date"].strftime("%Y-%m-%d")
+
+    # Get destinations from trip group
+    from app.services import storage
+    group_code = users[0].group_code if users and users[0].group_code else 'DEFAULT_GROUP'
+    trip_group = storage.get_trip_group(group_code)
     
-    ai_destinations = []
-    system_used = "Basic system"
+    if not trip_group or not trip_group.destinations:
+        return {"error": f"No destinations found for group {group_code}. Trip creator must set destinations first."}
     
-    # PRIORITY 1: Try LangGraph Multi-Agent System
-    if LANGGRAPH_AVAILABLE:
-        try:
-            print("🚀 Activating LangGraph Multi-Agent Travel System...")
-            ai_result = await langgraph_system.plan_trip(users, group_profile)
-            
-            if "error" not in ai_result and ai_result.get("langgraph_system"):
-                # Parse multi-agent recommendations
-                recommendations = ai_result.get("recommendations", [])
-                
-                ai_destinations = []
-                for rec in recommendations:
-                    ai_destinations.append({
-                        "name": rec["destination"],
-                        "score": rec["match_score"],
-                        "estimated_cost": rec["total_cost"],
-                        "reasoning": rec["reasoning"],
-                        "multi_agent_approved": rec.get("multi_agent_approved", True),
-                        "data_source": "langgraph_multi_agent_system"
-                    })
-                
-                system_used = "LangGraph Multi-Agent System"
-                print(f"✅ LangGraph multi-agent system generated {len(ai_destinations)} recommendations")
-        except Exception as e:
-            print(f"LangGraph multi-agent system failed: {e}")
+    top_destinations = trip_group.destinations
     
-    # PRIORITY 2: Try Simple AI if LangGraph failed
-    if not ai_destinations and OPENAI_AVAILABLE:
-        try:
-            ai_destinations = await simple_ai_recommendations(group_profile, users)
-            system_used = "Simple AI recommendations"
-            print("✅ Simple AI recommendations generated successfully")
-        except Exception as e:
-            print(f"Simple AI recommendations failed: {e}")
+    # ===== USE PRE-AGGREGATED DATA FROM AI_INPUT =====
     
-    # PRIORITY 3: Fallback destinations
-    if not ai_destinations:
-        ai_destinations = [
-            {"name": "Sedona, AZ", "score": 75, "estimated_cost": 350, "reasoning": "Beautiful nature, hiking"},
-            {"name": "Miami, FL", "score": 72, "estimated_cost": 450, "reasoning": "Beach vibes, nightlife"},
-            {"name": "Austin, TX", "score": 78, "estimated_cost": 400, "reasoning": "Music, food, culture"}
-        ]
-        system_used = "Basic fallback system"
+    # Extract consensus values (already calculated by ai_input.py)
+    travel_styles = group_profile.get("travel_styles", {})
+    primary_travel_style = max(travel_styles, key=travel_styles.get) if travel_styles else "balanced"
     
-    # Update date ranges with AI recommendations
-    for trip_range in best_ranges:
-        trip_range["start_date"] = trip_range["start_date"].strftime("%Y-%m-%d")
-        trip_range["end_date"] = trip_range["end_date"].strftime("%Y-%m-%d")
-        trip_range["user_count"] = len(trip_range["users"])
-        trip_range["destinations"] = ai_destinations[:3]
+    paces = group_profile.get("paces", {})
+    primary_pace = max(paces, key=paces.get) if paces else "balanced"
     
-    return {
-        "langgraph_available": LANGGRAPH_AVAILABLE,
-        "ai_powered": OPENAI_AVAILABLE,
-        "multi_agent_system": LANGGRAPH_AVAILABLE,
-        "best_date_ranges": best_ranges,
-        "date_to_users_count": trip_data["date_to_users_count"],
-        "common_dates": trip_data["common_dates"],
-        "group_profile": group_profile,
-        "system_status": system_used,
-        "ai_framework": "LangGraph" if LANGGRAPH_AVAILABLE else ("OpenAI" if OPENAI_AVAILABLE else "Basic")
+    interests = list(group_profile.get("interests", {}).keys())
+    
+    accommodation_styles = group_profile.get("accommodation_styles", {})
+    primary_accommodation_style = max(accommodation_styles, key=accommodation_styles.get) if accommodation_styles else "standard"
+    
+    trip_duration = group_profile.get("trip_duration_range", {}).get("consensus_duration", 5)
+    
+    # Derive flight preferences from consensus travel style
+    flight_preferences = {
+        "travel_class": "business" if primary_travel_style == "luxury" else "economy",
+        "nonstop_preferred": primary_travel_style != "budget"
     }
+
+    # Convert airport groups to flight requests
+    flight_groups = build_flight_requests_from_airports(
+        group_profile["airport_groups"], 
+        top_destinations, 
+        departure_date, 
+        return_date
+    )
+
+    # Build accommodation details from user profiles (individual data needed for room assignments)
+    accommodation_details = []
+    for user_profile in group_profile["user_profiles"]:
+        accommodation_details.append({
+            "email": user_profile["email"],
+            "name": user_profile["name"],
+            "room_sharing": user_profile.get("room_sharing", "any")
+        })
+
+    # Build final preferences object using pre-aggregated data
+    user_preferences = {
+        "top_destinations": top_destinations,
+        "group_size": group_profile["group_size"],
+        
+        # GROUP PREFERENCES (all pre-aggregated by ai_input.py)
+        "travel_style": primary_travel_style,
+        "trip_pace": primary_pace,
+        "interests": interests,
+        "budgets": {
+            "budget_min": group_profile["budget_min"],
+            "budget_max": group_profile["budget_max"],
+            "budget_target": group_profile["budget_target"]
+        },
+        "group_accommodation_style": primary_accommodation_style,
+        
+        # FLIGHT DATA
+        "flight_groups": flight_groups,
+        "flight_preferences": flight_preferences,
+        
+        # INDIVIDUAL DATA (for room assignments)
+        "accommodation_details": accommodation_details,
+        
+        # TRIP DETAILS
+        "trip_duration_days": trip_duration,
+        "departure_date": departure_date,
+        "return_date": return_date,
+        
+        # ADDITIONAL CONTEXT
+        "conflicts": group_profile.get("conflicts", []),
+        "group_profile": group_profile  # Include full profile for agent context
+    }
+
+    try:
+        print("🧳 Trip Planning Summary:")
+        print(f"  📍 Destinations: {', '.join(top_destinations)}")
+        print(f"  👥 Group size: {group_profile['group_size']} people")
+        print(f"  📅 Dates: {departure_date} to {return_date} ({trip_duration} days)")
+        print(f"  ✈️ Departure airports: {list(group_profile['airport_groups'].keys())}")
+        print(f"  💰 Budget: ${group_profile['budget_min']}-${group_profile['budget_max']}/person")
+        print(f"  🏨 Accommodation: {primary_accommodation_style}")
+        print(f"  ✈️ Flight class: {flight_preferences['travel_class']}")
+        
+        print("\n🤖 Calling AI agent...")
+        agent_result = await travel_agent.plan_trip(user_preferences)
+
+        if agent_result.get("success"):
+            # NEW: Extract booking links from agent response
+            print("\n🔗 Extracting booking links...")
+            booking_links = await get_all_booking_links({
+                "agent_response": agent_result["agent_response"],
+                "preferences_used": user_preferences
+            })
+            
+            # Log booking results
+            if booking_links.get('success'):
+                summary = booking_links.get('summary', {})
+                print(f"✅ Found booking links:")
+                print(f"   - Flights: {summary.get('flights', {}).get('total_links', 0)} links for {summary.get('flights', {}).get('total_routes', 0)} routes")
+                print(f"   - Hotel: {summary.get('hotel', {}).get('total_links', 0)} links")
+                print(f"   - Activities: {summary.get('activities', {}).get('total_links', 0)} links for {summary.get('activities', {}).get('activities_with_booking', 0)} activities")
+            else:
+                print(f"⚠️ Failed to extract booking links: {booking_links.get('error', 'Unknown error')}")
+            
+            result = {
+                "system": "LangChain Agent with Tools",
+                "agent_response": agent_result["agent_response"],
+                "preferences_used": user_preferences,
+                "date_range": best_ranges[0],
+                "group_profile": group_profile,
+                "booking_links": booking_links,  # NEW: Include booking links
+                "ready_for_email": booking_links.get('success', False)  # NEW: Email ready flag
+            }
+        else:
+            result = {"error": agent_result.get("error", "Unknown failure")}
+
+    except Exception as e:
+        print(f"❌ Error: {str(e)}")
+        result = {"error": str(e)}
+
+    return result
