@@ -14,9 +14,9 @@ from langchain.tools import Tool
 from langchain.memory import ConversationBufferMemory
 from langchain_openai import ChatOpenAI
 
-from tools.amadeus_flight_tool import AmadeusFlightTool
-from tools.amadeus_hotel_tool import AmadeusHotelTool
-from tools.tavily_itinerary_tool import ItineraryTool
+from app.tools.amadeus_flight_tool import AmadeusFlightTool
+from app.tools.amadeus_hotel_tool import HotelSearchTool
+from app.tools.tavily_itinerary_tool import ItineraryTool
 
 # Load environment variables
 load_dotenv()
@@ -33,7 +33,7 @@ class TravelAgent:
 
         # Instantiate tool wrappers
         self.flight_tool = AmadeusFlightTool()
-        self.hotel_tool = AmadeusHotelTool()
+        self.hotel_tool = HotelSearchTool()
         self.itinerary_tool = ItineraryTool()
 
         # Convert tools to LangChain format
