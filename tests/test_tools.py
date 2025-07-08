@@ -115,9 +115,9 @@ class TestHotelSearchTool:
         }
 
         # Mock all the hotel service functions
-        with patch('app.services.amadeus_hotels.get_hotel_offers') as mock_hotel, \
-             patch('app.services.amadeus_hotels.assign_rooms_smartly') as mock_assign, \
-             patch('app.services.amadeus_hotels.calculate_total_accommodation_cost') as mock_calc:
+        with patch('app.tools.amadeus_hotel_tool.get_hotel_offers') as mock_hotel, \
+             patch('app.tools.amadeus_hotel_tool.assign_rooms_smartly') as mock_assign, \
+             patch('app.tools.amadeus_hotel_tool.calculate_total_accommodation_cost') as mock_calc:
             
             # Mock hotel search returns empty (triggers fallback)
             mock_hotel.return_value = []
@@ -175,8 +175,32 @@ class TestHotelSearchTool:
         }
         
         # Mock API to return empty results (triggers fallback)
-        with patch('app.services.amadeus_hotels.get_hotel_offers') as mock_hotel:
+        with patch('app.tools.amadeus_hotel_tool.get_hotel_offers') as mock_hotel, \
+             patch('app.tools.amadeus_hotel_tool.assign_rooms_smartly') as mock_assign, \
+             patch('app.tools.amadeus_hotel_tool.calculate_total_accommodation_cost') as mock_calc:
+            
             mock_hotel.return_value = []
+            
+            # Mock room assignment for fallback
+            mock_assign.return_value = {
+                'summary': '1 single room',
+                'total_cost_per_night': 100
+            }
+            
+            # Mock cost calculation for fallback
+            mock_calc.return_value = {
+                'total_group_cost': 700,
+                'individual_costs': {
+                    'john@example.com': {
+                        'name': 'John Doe',
+                        'email': 'john@example.com',
+                        'room_type': 'single',
+                        'cost_per_night': 100,
+                        'total_cost': 700,
+                        'sharing_with': []
+                    }
+                }
+            }
             
             result = self.tool._call(json.dumps(test_input))
             result_data = json.loads(result)
@@ -322,12 +346,44 @@ class TestToolIntegration:
         
         # Mock external services
         with patch('app.services.amadeus_flights.get_flight_offers') as mock_flight, \
-             patch('app.services.amadeus_hotels.get_hotel_offers') as mock_hotel, \
+             patch('app.tools.amadeus_hotel_tool.get_hotel_offers') as mock_hotel, \
+             patch('app.tools.amadeus_hotel_tool.assign_rooms_smartly') as mock_assign, \
+             patch('app.tools.amadeus_hotel_tool.calculate_total_accommodation_cost') as mock_calc, \
              patch.object(itinerary_tool, 'activity_service') as mock_activity:
             
             # Mock responses
             mock_flight.return_value = {"price_round_trip": 650}
             mock_hotel.return_value = []  # Will use fallback
+            
+            # Mock room assignment for fallback
+            mock_assign.return_value = {
+                'summary': '1 double room',
+                'total_cost_per_night': 150
+            }
+            
+            # Mock cost calculation for fallback  
+            mock_calc.return_value = {
+                'total_group_cost': 1050,
+                'individual_costs': {
+                    'john@example.com': {
+                        'name': 'John',
+                        'email': 'john@example.com',
+                        'room_type': 'double',
+                        'cost_per_night': 75,
+                        'total_cost': 525,
+                        'sharing_with': ['Jane']
+                    },
+                    'jane@example.com': {
+                        'name': 'Jane',
+                        'email': 'jane@example.com',
+                        'room_type': 'double',
+                        'cost_per_night': 75,
+                        'total_cost': 525,
+                        'sharing_with': ['John']
+                    }
+                }
+            }
+            
             mock_activity.search_activities.return_value = {
                 "activities": [{"name": "Test Activity", "duration": 2, "cost": 20}],
                 "total_activities": 1
