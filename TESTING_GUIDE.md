@@ -328,3 +328,122 @@ python run_tests.py
 - **External dependencies** mockable
 
 Start with: `python run_tests.py` and you'll have a comprehensive view of your code's testability! 
+
+## 🛠️ **Troubleshooting Common Issues**
+
+### Flight Search Returning Empty Results
+
+**Problem**: Flight searches return empty results with `total_flight_cost: 0` and no flight data.
+
+**Symptoms**:
+```json
+{
+  "agent_response": "I'm sorry, but I was unable to retrieve flight pricing...",
+  "booking_links": {
+    "flights": {},
+    "hotel": {},
+    "activities": []
+  },
+  "cost_optimization": {
+    "total_flight_cost": 0
+  }
+}
+```
+
+**Common Causes**:
+1. **Amadeus Test Environment Limitations**: The test environment has very limited flight data
+2. **Future Dates**: Dates too far in the future (>6 months) may not have published schedules
+3. **Route Availability**: Some routes (especially to smaller destinations) may not be available in test data
+4. **Invalid Airport Codes**: Using incorrect IATA codes (e.g., Madrid should be "MAD")
+
+**Solutions**:
+
+#### 1. **Test with Alternative Destinations**
+Try destinations with better test data availability:
+```python
+# Instead of Madrid (MAD), try:
+destinations = ["BCN"]  # Barcelona
+destinations = ["CDG"]  # Paris
+destinations = ["LHR"]  # London
+```
+
+#### 2. **Use Closer Dates**
+```python
+from datetime import datetime, timedelta
+
+# Use dates within 3-6 months
+departure_date = (datetime.now() + timedelta(days=90)).strftime("%Y-%m-%d")
+return_date = (datetime.now() + timedelta(days=97)).strftime("%Y-%m-%d")
+```
+
+#### 3. **Test Flight Tool Directly**
+Run the flight tool in isolation to see detailed error messages:
+
+```bash
+cd app/tools
+python amadeus_flight_tool.py
+```
+
+This will show:
+- Detailed search parameters
+- API response status
+- Specific error messages
+- Alternative search suggestions
+
+#### 4. **Enable Debug Logging**
+Add to your main.py:
+```python
+import logging
+logging.basicConfig(level=logging.DEBUG)
+```
+
+#### 5. **Switch to Production Environment** (Advanced)
+If you have production Amadeus credentials:
+
+```python
+# In app/services/amadeus_flights.py
+amadeus = Client(
+    client_id=os.getenv("AMADEUS_CLIENT_ID"),
+    client_secret=os.getenv("AMADEUS_CLIENT_SECRET"),
+    hostname='production'  # Change from 'test'
+)
+```
+
+**Expected Behavior with Fixes**:
+- Tool provides detailed error explanations
+- Suggests alternative destinations and dates
+- Offers manual search links as fallback
+- Agent acknowledges limitations and provides alternatives
+
+### Testing Flight Search Improvements
+
+Run this test to verify improved error handling:
+
+```bash
+# Test the enhanced flight tool
+python app/tools/amadeus_flight_tool.py
+
+# Run integration tests
+python -m pytest tests/test_tools.py::TestAmadeusFlightTool -v -s
+
+# Test full trip planning with debug info
+python -c "
+import asyncio
+from app.services.planner import plan_trip
+from app.models.group_inputs import UserInput
+
+# Create test users with known issues (Madrid, future dates)
+users = [
+    UserInput(
+        email='test1@test.com',
+        name='Test User 1',
+        preferences={'departure_airports': ['LAX']},
+        availability={'dates': ['2025-07-15', '2025-07-16', '2025-07-17']},
+        group_code='TEST_GROUP'
+    )
+]
+
+result = asyncio.run(plan_trip(users))
+print('Trip Planning Result:', result)
+"
+``` 

@@ -17,7 +17,7 @@ from langchain.agents import initialize_agent, AgentType
 from app.tools.refinement_tool import create_refinement_tools
 
 # Import the parser
-from app.services.agent_parser import AgentParser
+from app.services.agent_parser import AgentResponseParser
 
 logger = logging.getLogger(__name__)
 
@@ -37,7 +37,7 @@ class TripRefinementChat:
         self.creator_email = creator_email
         
         # Parse current itinerary
-        self.parser = AgentParser()
+        self.parser = AgentResponseParser()
         self.current_itinerary = self._parse_current_itinerary()
         
         # Initialize chat components

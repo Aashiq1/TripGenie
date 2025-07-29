@@ -8,7 +8,8 @@ from datetime import datetime
 # Initialize the Amadeus API client
 amadeus = Client(
     client_id=os.getenv("AMADEUS_CLIENT_ID"),
-    client_secret=os.getenv("AMADEUS_CLIENT_SECRET")
+    client_secret=os.getenv("AMADEUS_CLIENT_SECRET"),
+    hostname='test'  # Use test environment endpoints for test credentials
 )
 
 def get_hotel_offers(
@@ -82,25 +83,40 @@ def get_hotel_offers(
             room_types_available = {}
             
             for offer in hotel_data.get('offers', []):
-                room_info = offer['room']['typeEstimated']
-                room_category = room_info.get('category', 'STANDARD')
-                beds = room_info.get('beds', 1)
-                bed_type = room_info.get('bedType', 'UNKNOWN')
-                
-                # Estimate capacity based on beds and type
-                capacity = estimate_room_capacity(beds, bed_type, room_category)
-                room_key = f"{room_category}_{capacity}"
-                
-                if room_key not in room_types_available:
-                    room_types_available[room_key] = {
-                        'category': room_category,
-                        'capacity': capacity,
-                        'beds': beds,
-                        'bed_type': bed_type,
-                        'base_price': float(offer['price']['total']),
-                        'price_per_night': float(offer['price']['total']) / num_nights,
-                        'cancellation': offer.get('policies', {}).get('cancellation', {}).get('type', 'Unknown')
-                    }
+                try:
+                    # Handle different API response structures
+                    room_info = offer.get('room', {})
+                    
+                    if 'typeEstimated' in room_info:
+                        # New API structure
+                        type_estimated = room_info['typeEstimated']
+                        room_category = type_estimated.get('category', 'STANDARD')
+                        beds = type_estimated.get('beds', 1)
+                        bed_type = type_estimated.get('bedType', 'UNKNOWN')
+                    else:
+                        # Fallback for older API structure
+                        room_category = room_info.get('category', 'STANDARD')
+                        beds = room_info.get('beds', 1)
+                        bed_type = room_info.get('bedType', 'UNKNOWN')
+                    
+                    # Estimate capacity based on beds and type
+                    capacity = estimate_room_capacity(beds, bed_type, room_category)
+                    room_key = f"{room_category}_{capacity}"
+                    
+                    if room_key not in room_types_available:
+                        room_types_available[room_key] = {
+                            'category': room_category,
+                            'capacity': capacity,
+                            'beds': beds,
+                            'bed_type': bed_type,
+                            'base_price': float(offer['price']['total']),
+                            'price_per_night': float(offer['price']['total']) / num_nights,
+                            'cancellation': offer.get('policies', {}).get('cancellation', {}).get('type', 'Unknown')
+                        }
+                except (KeyError, TypeError) as e:
+                    print(f"Error parsing hotel offer: {e}")
+                    # Continue with next offer
+                    continue
             
             hotels.append({
                 'hotel_id': hotel_info['hotelId'],
@@ -163,9 +179,9 @@ def get_standard_room_types():
 
 def assign_rooms_smartly(users: List[Dict], available_room_types: Dict[str, Dict]) -> Dict:
     """
-    Smart room assignment:
+    Smart room assignment with FAIR COST DISTRIBUTION:
     1. Give private rooms to those who want them
-    2. Group remaining people efficiently (prefer larger shared rooms)
+    2. For sharing users, ensure fair cost even when forced into different room types
     """
     
     # Step 1: Separate users by preference
@@ -191,15 +207,17 @@ def assign_rooms_smartly(users: List[Dict], available_room_types: Dict[str, Dict
     for user in want_private:
         room_assignments.append({
             'room_type': 'single',
-            'occupants': [user['email']],
-            'occupant_names': [user['name']],
+            'occupants': [user.get('email', user.get('name', 'Unknown'))],
+            'occupant_names': [user.get('name', 'Unknown')],
             'cost_per_person': single_room_price,
             'total_room_cost': single_room_price
         })
         total_cost += single_room_price
     
-    # Step 3: Assign shared rooms efficiently
+    # Step 3: FAIR SHARED ROOM ASSIGNMENT
     sharing_users = willing_to_share.copy()
+    sharing_assignments = []
+    sharing_total_cost = 0
     
     while len(sharing_users) > 0:
         assigned = False
@@ -220,34 +238,46 @@ def assign_rooms_smartly(users: List[Dict], available_room_types: Dict[str, Dict
                 
                 for _ in range(capacity):
                     user = sharing_users.pop(0)
-                    occupants.append(user['email'])
-                    occupant_names.append(user['name'])
+                    occupants.append(user.get('email', user.get('name', 'Unknown')))
+                    occupant_names.append(user.get('name', 'Unknown'))
                 
-                cost_per_person = room_option['price'] / capacity
-                
-                room_assignments.append({
+                sharing_assignments.append({
                     'room_type': room_option['type'],
                     'occupants': occupants,
                     'occupant_names': occupant_names,
-                    'cost_per_person': cost_per_person,
-                    'total_room_cost': room_option['price']
+                    'total_room_cost': room_option['price'],
+                    'capacity': capacity
                 })
                 
-                total_cost += room_option['price']
+                sharing_total_cost += room_option['price']
                 assigned = True
                 break
         
         # If we couldn't assign to any multi-person room, use singles
         if not assigned and len(sharing_users) > 0:
             user = sharing_users.pop(0)
-            room_assignments.append({
+            sharing_assignments.append({
                 'room_type': 'single',
-                'occupants': [user['email']],
-                'occupant_names': [user['name']],
-                'cost_per_person': single_room_price,
-                'total_room_cost': single_room_price
+                'occupants': [user.get('email', user.get('name', 'Unknown'))],
+                'occupant_names': [user.get('name', 'Unknown')],
+                'total_room_cost': single_room_price,
+                'capacity': 1
             })
-            total_cost += single_room_price
+            sharing_total_cost += single_room_price
+    
+    # Step 4: FAIR COST DISTRIBUTION for sharing users
+    total_sharing_users = len(willing_to_share)
+    if total_sharing_users > 0:
+        fair_cost_per_person = sharing_total_cost / total_sharing_users
+        
+        # Apply fair cost to all sharing assignments
+        for assignment in sharing_assignments:
+            num_occupants = len(assignment['occupants'])
+            assignment['cost_per_person'] = fair_cost_per_person
+            # Note: total room cost stays the same for hotel billing
+        
+        room_assignments.extend(sharing_assignments)
+        total_cost += sharing_total_cost
     
     return {
         'assignments': room_assignments,
@@ -279,9 +309,9 @@ def generate_cost_breakdown(assignments: List[Dict]) -> List[Dict]:
     breakdown = []
     
     for assignment in assignments:
-        for i, email in enumerate(assignment['occupants']):
+        for i, occupant_id in enumerate(assignment['occupants']):
             breakdown.append({
-                'user_email': email,
+                'user_email': occupant_id,  # Could be email or name
                 'user_name': assignment['occupant_names'][i],
                 'room_type': assignment['room_type'],
                 'sharing_with': len(assignment['occupants']) - 1,
@@ -304,8 +334,8 @@ def calculate_total_accommodation_cost(
     # Calculate individual totals
     individual_totals = {}
     for person in room_assignments['cost_breakdown']:
-        email = person['user_email']
-        individual_totals[email] = {
+        occupant_id = person['user_email']  # Could be email or name
+        individual_totals[occupant_id] = {
             'name': person['user_name'],
             'room_type': person['room_type'],
             'cost_per_night': person['cost_per_night'],

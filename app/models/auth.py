@@ -21,8 +21,19 @@ class User(UserBase):
         from_attributes = True
 
 class Token(BaseModel):
-    token: str
+    access_token: str
+    refresh_token: str
+    token_type: str = "bearer"
+    expires_in: int  # seconds
     user: User
+
+class TokenRefresh(BaseModel):
+    refresh_token: str
+
+class TokenResponse(BaseModel):
+    access_token: str
+    token_type: str = "bearer"
+    expires_in: int  # seconds
 
 class UserTrip(BaseModel):
     groupCode: str
@@ -30,6 +41,8 @@ class UserTrip(BaseModel):
     memberCount: int
     role: str  # 'admin' or 'member'
     joinedAt: datetime
+    destination: Optional[str] = None
+    departureDate: Optional[str] = None
 
     class Config:
         from_attributes = True 

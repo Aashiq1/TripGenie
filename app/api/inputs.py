@@ -1,5 +1,5 @@
 from fastapi import APIRouter, HTTPException, Query, Depends
-from typing import Optional
+from typing import Optional, List
 from app.models.group_inputs import UserInput, GroupInput, TripGroup
 from app.services import storage, auth
 from app.services.planner import plan_trip
@@ -18,6 +18,48 @@ async def create_trip_group(trip_group: TripGroup, current_user: User = Depends(
         
         # Add creator to their trips
         auth.add_user_to_trip(current_user.id, trip_group.group_code, role="creator")
+        
+        # Create a basic user input entry for the creator to ensure data consistency
+        # This prevents the "trip not found" issue when no users have submitted preferences yet
+        from app.models.group_inputs import UserInput, Preferences, Availability
+        from datetime import datetime, timedelta
+        
+        # Create default user input for the creator
+        default_preferences = Preferences(
+            vibe=["relaxing"],
+            interests=["food"],
+            departure_airports=["LAX"],
+            budget={"min": 500, "max": 2000},
+            trip_duration=7,
+            travel_style="balanced",
+            pace="balanced",
+            accommodation_preference="standard",
+            room_sharing="any",
+            dietary_restrictions=None,
+            additional_info=None
+        )
+        
+        # Create default availability (next 3 weeks)
+        today = datetime.now()
+        availability_dates = []
+        for week in range(3):
+            week_start = today + timedelta(days=(week * 7))
+            availability_dates.append(week_start.strftime("%Y-%m-%d"))
+        
+        default_availability = Availability(dates=availability_dates)
+        
+        creator_input = UserInput(
+            name=current_user.fullName,
+            email=current_user.email,
+            phone="0000000000",  # Default placeholder
+            role="creator",
+            preferences=default_preferences,
+            availability=default_availability,
+            group_code=trip_group.group_code
+        )
+        
+        # Add the creator's input to the group
+        storage.add_user_to_group(creator_input, trip_group.group_code)
         
         return {
             "message": "Trip group created successfully",
@@ -38,18 +80,47 @@ async def submit_user_input(
         effective_group_code = group_code or getattr(user_input, 'group_code', 'DEFAULT_GROUP')
         if not effective_group_code:
             effective_group_code = 'DEFAULT_GROUP'
-            
-        # Add user to the specific group
-        storage.add_user_to_group(user_input, effective_group_code)
         
-        # Add user to their trips (role determined by user input, default to member)
-        role = getattr(user_input, 'role', 'member') or 'member'
-        auth.add_user_to_trip(current_user.id, effective_group_code, role=role)
+        # Check if user already exists in the group to preserve their role
+        existing_group_data = storage.get_group_data(effective_group_code)
+        existing_user = None
+        for user in existing_group_data or []:
+            if user.email == current_user.email:
+                existing_user = user
+                break
+        
+        # Preserve existing role (especially creator role) or use input role or default to member
+        if existing_user and existing_user.role:
+            preserved_role = existing_user.role
+        else:
+            preserved_role = getattr(user_input, 'role', 'member') or 'member'
+        
+        # Create a new user input with preserved role
+        updated_user_input = UserInput(
+            name=user_input.name,
+            email=user_input.email,
+            phone=user_input.phone,
+            role=preserved_role,  # Use preserved role
+            preferences=user_input.preferences,
+            availability=user_input.availability,
+            group_code=effective_group_code
+        )
+            
+        # Add user to the specific group (this will overwrite existing entry)
+        storage.add_user_to_group(updated_user_input, effective_group_code)
+        
+        # Add user to their trips with preserved role
+        auth.add_user_to_trip(current_user.id, effective_group_code, role=preserved_role)
+        
+        # Get current group data for response
+        group_data = storage.get_group_data(effective_group_code)
         
         return {
-            "message": "User input received successfully",
-            "user": user_input,
-            "group_code": effective_group_code
+            "success": True,
+            "message": "User preferences received successfully",
+            "user": updated_user_input,
+            "group_code": effective_group_code,
+            "current_user_count": len(group_data) if group_data else 1
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to process user input: {str(e)}")

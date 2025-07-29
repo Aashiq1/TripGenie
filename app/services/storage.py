@@ -13,6 +13,7 @@ from app.models.group_inputs import UserInput, TripGroup
 STORAGE_DIR = "data"
 GROUPS_FILE = os.path.join(STORAGE_DIR, "groups.json")
 TRIP_GROUPS_FILE = os.path.join(STORAGE_DIR, "trip_groups.json")
+TRIP_PLANS_FILE = os.path.join(STORAGE_DIR, "trip_plans.json")
 
 def ensure_storage_dir():
     """Ensure storage directory exists"""
@@ -71,8 +72,29 @@ def get_group_data(group_code: str) -> List[UserInput]:
     groups = load_groups()
     group_users = groups.get(group_code, [])
     
-    # Convert back to UserInput objects
-    return [UserInput(**user_data) for user_data in group_users]
+    # Convert back to UserInput objects with backward compatibility
+    user_inputs = []
+    for user_data in group_users:
+        # Handle backward compatibility for missing fields
+        if 'preferences' in user_data:
+            prefs = user_data['preferences']
+            # Add default values for missing fields
+            if 'travel_style' not in prefs:
+                prefs['travel_style'] = 'balanced'
+            if 'pace' not in prefs:
+                prefs['pace'] = 'balanced'
+            if 'accommodation_preference' not in prefs:
+                prefs['accommodation_preference'] = 'standard'
+            if 'room_sharing' not in prefs:
+                prefs['room_sharing'] = 'any'
+        
+        # Add default role if missing
+        if 'role' not in user_data:
+            user_data['role'] = 'member'
+            
+        user_inputs.append(UserInput(**user_data))
+    
+    return user_inputs
 
 def get_all_users() -> List[UserInput]:
     """Get all users across all groups (for backward compatibility)"""
@@ -130,6 +152,51 @@ def get_trip_group(group_code: str) -> Optional[TripGroup]:
         return TripGroup(**group_data)
     return None
 
+def update_trip_group(trip_group: TripGroup) -> TripGroup:
+    """Update an existing trip group"""
+    trip_groups = load_trip_groups()
+    
+    # Convert TripGroup to dict for storage
+    trip_group_dict = trip_group.model_dump()
+    
+    # Update the trip group
+    trip_groups[trip_group.group_code] = trip_group_dict
+    
+    save_trip_groups(trip_groups)
+    return trip_group
+
+def load_trip_plans() -> Dict[str, dict]:
+    """Load all trip plans from storage"""
+    ensure_storage_dir()
+    if os.path.exists(TRIP_PLANS_FILE):
+        try:
+            with open(TRIP_PLANS_FILE, 'r') as f:
+                return json.load(f)
+        except (json.JSONDecodeError, FileNotFoundError):
+            return {}
+    return {}
+
+def save_trip_plans(trip_plans: Dict[str, dict]):
+    """Save all trip plans to storage"""
+    ensure_storage_dir()
+    with open(TRIP_PLANS_FILE, 'w') as f:
+        json.dump(trip_plans, f, indent=2, default=str)
+
+def save_trip_plan(group_code: str, trip_plan: dict):
+    """Save a trip plan for a specific group"""
+    trip_plans = load_trip_plans()
+    trip_plans[group_code] = {
+        **trip_plan,
+        'saved_at': datetime.now().isoformat(),
+        'group_code': group_code
+    }
+    save_trip_plans(trip_plans)
+
+def get_trip_plan(group_code: str) -> Optional[dict]:
+    """Get a trip plan for a specific group"""
+    trip_plans = load_trip_plans()
+    return trip_plans.get(group_code)
+
 def clear_all_data():
     """Clear all data"""
     ensure_storage_dir()
@@ -137,3 +204,5 @@ def clear_all_data():
         os.remove(GROUPS_FILE)
     if os.path.exists(TRIP_GROUPS_FILE):
         os.remove(TRIP_GROUPS_FILE)
+    if os.path.exists(TRIP_PLANS_FILE):
+        os.remove(TRIP_PLANS_FILE)

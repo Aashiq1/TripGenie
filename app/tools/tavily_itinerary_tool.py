@@ -31,170 +31,202 @@ class ItineraryTool:
     
     def _call(self, input_str: str) -> str:
         """
-        Generate itinerary based on destination and preferences.
+        Create itinerary for destinations based on user interests and group size.
         
-        Args:
-            input_str: JSON string with search parameters
-            
-        Returns:
-            JSON string with daily itinerary including booking links
+        Input format (JSON):
+        {
+            "destinations": ["MAD", "BCN"],
+            "interests": ["food", "nightlife", "culture"],
+            "group_size": 3,
+            "trip_duration_days": 5,
+            "travel_style": "standard",
+            "trip_pace": "balanced",
+            "budget_per_person": 1200,
+            "departure_date": "2025-07-14"
+        }
         """
         try:
-            # Parse input
-            data = json.loads(input_str)
+            input_data = json.loads(input_str)
             
-            destination = data.get("destination")
-            interests = data.get("interests", ["culture", "food"])
-            travel_style = data.get("travel_style", "standard")
-            num_days = data.get("num_days", 5)
-            trip_pace = data.get("trip_pace", "balanced")
+            destinations = input_data.get("destinations", [])
+            interests = input_data.get("interests", [])
+            group_size = input_data.get("group_size", 2)
+            trip_duration = input_data.get("trip_duration_days", 5)
+            travel_style = input_data.get("travel_style", "standard")
+            trip_pace = input_data.get("trip_pace", "balanced")
+            budget_per_person = input_data.get("budget_per_person", 1000)
+            departure_date = input_data.get("departure_date")  # NEW: Get departure date
             
-            # Validate inputs
-            if not destination:
-                return json.dumps({
-                    "error": "Destination is required",
-                    "example_input": {
-                        "destination": "Barcelona",
-                        "interests": ["food", "culture"],
-                        "travel_style": "standard",
-                        "num_days": 5,
-                        "trip_pace": "balanced"
-                    }
-                })
+            if not destinations:
+                return json.dumps({"error": "No destinations provided"})
             
-            # Search for activities using Tavily
-            search_results = self.activity_service.search_activities(
-                destination=destination,
-                interests=interests,
-                travel_style=travel_style,
-                num_days=num_days,
-                trip_pace=trip_pace
-            )
+            # Process each destination
+            results = {}
             
-            # Format the response for the agent
-            formatted_response = self._format_itinerary_response(
-                search_results,
-                destination,
-                num_days
-            )
+            for destination in destinations:
+                # Search for activities using enhanced search with departure date
+                search_results = self.activity_service.search_activities(
+                    destination=destination,
+                    interests=interests,
+                    travel_style=travel_style,
+                    num_days=trip_duration,
+                    trip_pace=trip_pace,
+                    departure_date=departure_date  # NEW: Pass departure date for smart assignment
+                )
+                
+                # Format the response
+                formatted_result = self._format_itinerary_response(
+                    search_results, 
+                    destination, 
+                    trip_duration
+                )
+                
+                results[destination] = formatted_result
             
-            return json.dumps(formatted_response, indent=2)
+            return json.dumps(results, indent=2)
             
         except json.JSONDecodeError:
-            return json.dumps({
-                "error": "Invalid JSON input",
-                "example_input": {
-                    "destination": "Barcelona",
-                    "interests": ["food", "culture"],
-                    "travel_style": "standard",
-                    "num_days": 5,
-                    "trip_pace": "balanced"
-                }
-            })
+            return json.dumps({"error": "Invalid JSON input"})
         except Exception as e:
-            # If Tavily fails, return a basic itinerary
-            return json.dumps({
-                "error": f"Search failed: {str(e)}",
-                "fallback_itinerary": self._generate_fallback_itinerary(
-                    data.get("destination", "Unknown"),
-                    data.get("num_days", 5),
-                    data.get("interests", ["culture", "food"])
-                )
-            })
+            return json.dumps({"error": f"Failed to create itinerary: {str(e)}"})
     
     def _format_itinerary_response(self, 
                                   search_results: Dict, 
                                   destination: str,
                                   num_days: int) -> Dict:
-        """
-        Format the search results into a structured itinerary response with costs.
-        """
+        """Format search results into a comprehensive itinerary response."""
         daily_itinerary = search_results.get("daily_itinerary", {})
-        all_bookable_links = search_results.get("all_bookable_links", [])
-        trip_totals = daily_itinerary.pop("trip_totals", {})  # Extract totals
+        trip_totals = daily_itinerary.pop("trip_totals", {})
+        trip_context = search_results.get("trip_context", {})  # NEW: Get trip context
         
-        # Format each day
+        # Format daily activities
         formatted_days = {}
+        all_bookable_links = []
         total_bookable_activities = 0
         
         for day_key, day_data in daily_itinerary.items():
+            if not isinstance(day_data, dict):
+                continue
+                
             activities = day_data.get("activities", [])
-            
             formatted_activities = []
+            
             for activity in activities:
                 formatted_activity = {
                     "name": activity.get("name"),
                     "description": activity.get("description"),
                     "duration_hours": activity.get("duration", 2),
                     "interest_category": activity.get("interest"),
+                    "activity_type": activity.get("activity_type"),
                     "booking_available": activity.get("is_bookable", False)
                 }
                 
-                # Add pricing information
+                # Add pricing information with disclaimers
                 if activity.get("price_info"):
+                    price_info = activity["price_info"]
                     formatted_activity["price"] = {
-                        "display": activity["price_info"]["price_string"],
-                        "amount_usd": activity["price_info"]["amount_usd"],
-                        "per_person": activity["price_info"].get("per_person", True)
+                        "display": price_info["price_string"],
+                        "amount_usd": price_info["amount_usd"],
+                        "per_person": price_info.get("per_person", True),
+                        "confidence": price_info.get("confidence", "medium"),
+                        "disclaimer": "Estimated price from web search - may not reflect current rates"
+                    }
+                else:
+                    formatted_activity["price"] = {
+                        "display": "See booking platform",
+                        "amount_usd": None,
+                        "per_person": True,
+                        "confidence": "none",
+                        "disclaimer": "Current pricing available on booking platform"
                     }
                 
                 # Add booking information if available
                 if activity.get("is_bookable"):
                     formatted_activity["booking_info"] = {
                         "platform": activity.get("booking_platform"),
-                        "booking_url": activity.get("booking_url")
+                        "booking_url": activity.get("booking_url"),
+                        "note": "Click to check current availability and pricing"
                     }
+                    
+                    # Track for summary
+                    all_bookable_links.append({
+                        "activity": activity["name"],
+                        "platform": activity["booking_platform"],
+                        "url": activity["booking_url"],
+                        "day": day_data.get("day_number", int(day_key.split("_")[1]))
+                    })
                     total_bookable_activities += 1
                 
                 formatted_activities.append(formatted_activity)
             
+            # Enhanced day formatting with smart assignment info
+            day_number = int(day_key.split("_")[1])
             formatted_days[day_key] = {
-                "day_number": int(day_key.split("_")[1]),
+                "day_number": day_number,
+                "day_label": day_data.get("date", f"Day {day_number}"),  # NEW: Include day label
+                "weekday": day_data.get("weekday", ""),  # NEW: Include weekday
+                "is_weekend": day_data.get("is_weekend", False),  # NEW: Weekend indicator
+                "day_theme": day_data.get("day_theme", "exploration"),  # NEW: Day theme
                 "activities": formatted_activities,
                 "total_duration_hours": day_data.get("total_duration", 8),
                 "bookable_activities": day_data.get("bookable_count", 0),
-                "estimated_cost_usd": day_data.get("day_cost_usd", 0),
-                "cost_summary": day_data.get("day_cost_summary", {})
+                "estimated_cost_notes": [
+                    "Prices shown are estimates from web search",
+                    "Click booking links for current pricing and availability",
+                    "Actual costs may vary by date and season"
+                ]
             }
         
-        # Create comprehensive cost summary
+        # Create comprehensive cost summary with disclaimers
         activity_costs = trip_totals.get("total_activity_cost_usd", 0)
         
         cost_summary = {
-            "activity_total_usd": activity_costs,
-            "average_per_day_usd": trip_totals.get("average_per_day", 0),
-            "estimated_food_per_day": 100,  # Standard estimate
-            "estimated_food_total": 100 * num_days,
-            "activities_plus_food": activity_costs + (100 * num_days),
-            "cost_breakdown_by_category": trip_totals.get("cost_breakdown", {}),
-            "budget_notes": [
-                f"Activity costs: ${activity_costs} for {num_days} days",
-                f"Estimated food/meals: ${100 * num_days} (${100}/day)",
-                f"Total (excluding accommodation): ${activity_costs + (100 * num_days)}"
+            "pricing_disclaimer": "⚠️ IMPORTANT: All prices are estimates from web search and may not be current",
+            "pricing_notes": [
+                "Prices extracted from web content are for reference only",
+                "Actual pricing may vary significantly by date, season, and availability", 
+                "Some activities may offer group discounts or package deals",
+                "Always check booking platforms for current rates before purchasing"
+            ],
+            "estimated_activity_total_usd": activity_costs if activity_costs > 0 else None,
+            "estimated_food_per_day": 50,  # More conservative estimate
+            "total_bookable_activities": total_bookable_activities,
+            "budget_recommendations": [
+                f"Budget ${max(100, activity_costs * 1.3):.0f} for activities (30% buffer)" if activity_costs > 0 else "Budget $150-300 for activities depending on choices",
+                f"Budget ${50 * num_days} for food ({num_days} days at $50/day)",
+                "Consider purchasing tickets in advance for popular attractions",
+                "Look for combo tickets and city passes for savings"
             ]
         }
         
-        # Create summary
+        # Enhanced summary with smart assignment info
         summary = {
             "destination": destination,
             "total_days": num_days,
             "total_activities": search_results.get("total_activities_found", 0),
             "bookable_activities": total_bookable_activities,
             "booking_platforms_found": list(set(
-                link["platform"] for link in all_bookable_links
-            ))
+                link["platform"] for link in all_bookable_links if link.get("platform")
+            )),
+            "quality_notes": [
+                f"Found {total_bookable_activities} activities with direct booking available",
+                "Activities selected based on group interests and travel style",
+                "All activities are from verified booking platforms"
+            ],
+            # NEW: Smart assignment summary
+            "smart_features": {
+                "day_specific_assignment": trip_totals.get("smart_assignment_used", False),
+                "weekend_optimized": trip_totals.get("nightlife_optimized", False),
+                "weekend_days": trip_totals.get("weekend_days", []),
+                "context_aware_search": True
+            }
         }
         
         return {
-            "status": "success",
-            "summary": summary,
-            "cost_summary": cost_summary,
             "daily_itinerary": formatted_days,
-            "booking_links": self._categorize_booking_links(all_bookable_links),
-            "search_metadata": {
-                "powered_by": "Tavily real-time search",
-                "note": "Prices shown where available. Some activities may require on-site payment."
-            }
+            "cost_summary": cost_summary,
+            "summary": summary,
+            "booking_links": all_bookable_links
         }
     
     def _categorize_booking_links(self, booking_links: List[Dict]) -> Dict:

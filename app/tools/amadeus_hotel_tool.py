@@ -109,13 +109,13 @@ class HotelSearchTool:
                             'individual_costs': [
                                 {
                                     'name': details['name'],
-                                    'email': details['email'],
+                                    'email': occupant_id,  # Use the key as email/name
                                     'room_type': details['room_type'],
                                     'cost_per_night': details['cost_per_night'],
                                     'total_cost': details['total_cost'],
                                     'sharing_with': details['sharing_with']
                                 }
-                                for email, details in total_costs['individual_costs'].items()
+                                for occupant_id, details in total_costs['individual_costs'].items()
                             ],
                             'nights': num_nights
                         })
@@ -163,6 +163,23 @@ class HotelSearchTool:
         
         prices = base_prices.get(style, base_prices["standard"])
         
+        # City-specific hotel suggestions
+        city_hotels = {
+            "MAD": {
+                "budget": "Hotel Mayorazgo (City Center) or Similar",
+                "standard": "Hotel Atlantico Madrid (Gran Via) or Similar", 
+                "luxury": "Hotel Villa Real (Near Prado Museum) or Similar"
+            },
+            "BCN": {
+                "budget": "Hotel Barcelona Center (Gothic Quarter) or Similar",
+                "standard": "Hotel Midmost Barcelona (Eixample) or Similar",
+                "luxury": "Hotel Casa Fuster (Passeig de Gracia) or Similar"
+            }
+        }
+        
+        # Get appropriate hotel name
+        hotel_name = city_hotels.get(destination, {}).get(style, f"{style.title()} Hotels in {destination} City Center")
+        
         # Use standard room types for estimation
         available_rooms = {
             "single": {"capacity": 1, "base_price": prices["single"]},
@@ -177,27 +194,33 @@ class HotelSearchTool:
         
         return {
             'hotels': [{
-                'hotel_name': f"Estimated {style.title()} Hotels in {destination}",
-                'hotel_rating': 'N/A',
-                'address': 'Various locations available',
+                'hotel_name': hotel_name,
+                'hotel_rating': '3-4 stars (estimated)',
+                'address': f'{destination} City Center - Various locations available',
                 'room_configuration': room_assignment['summary'],
                 'total_cost_per_night': room_assignment['total_cost_per_night'],
                 'total_trip_cost': total_costs['total_group_cost'],
                 'individual_costs': [
                     {
                         'name': details['name'],
-                        'email': details['email'],
+                        'email': occupant_id,  # Use the key as email/name
                         'room_type': details['room_type'],
                         'cost_per_night': details['cost_per_night'],
                         'total_cost': details['total_cost'],
                         'sharing_with': details['sharing_with']
                     }
-                    for email, details in total_costs['individual_costs'].items()
+                    for occupant_id, details in total_costs['individual_costs'].items()
                 ],
                 'nights': num_nights,
-                'note': 'Estimated prices - actual availability may vary'
+                '_fallback_data': True,
+                '_note': 'Estimated pricing - Amadeus hotel API unavailable'
             }],
-            'estimated': True
+            'search_parameters': {
+                'destination': destination,
+                'accommodation_style': style,
+                'group_size': len(accommodation_details),
+                'api_status': 'fallback_estimate'
+            }
         }
 
 

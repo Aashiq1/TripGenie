@@ -1,7 +1,7 @@
 import os
 import json
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional, Dict, List
 from passlib.context import CryptContext
 from jose import JWTError, jwt
@@ -13,8 +13,10 @@ pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 # JWT settings
 SECRET_KEY = os.getenv("JWT_SECRET_KEY", "your-secret-key-here")  # Change in production
+REFRESH_SECRET_KEY = os.getenv("REFRESH_SECRET_KEY", "your-refresh-secret-key-here")  # Separate key for refresh tokens
 ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_MINUTES = 30
+ACCESS_TOKEN_EXPIRE_MINUTES = 60  # 1 hour access tokens
+REFRESH_TOKEN_EXPIRE_DAYS = 30   # Long-lived refresh tokens
 
 # Storage
 STORAGE_DIR = "data"
@@ -68,10 +70,55 @@ def get_password_hash(password: str) -> str:
     """Hash a password"""
     return pwd_context.hash(password)
 
-def create_access_token(data: dict) -> str:
-    """Create a JWT access token"""
-    to_encode = data.copy()
-    return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+def create_access_token(user_id: str) -> str:
+    """Create a JWT access token with expiration"""
+    now = datetime.utcnow()
+    payload = {
+        "sub": user_id,
+        "iat": now,
+        "exp": now + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES),
+        "type": "access"
+    }
+    return jwt.encode(payload, SECRET_KEY, algorithm=ALGORITHM)
+
+def create_refresh_token(user_id: str) -> str:
+    """Create a JWT refresh token with expiration"""
+    now = datetime.utcnow()
+    payload = {
+        "sub": user_id,
+        "iat": now,
+        "exp": now + timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS),
+        "type": "refresh"
+    }
+    return jwt.encode(payload, REFRESH_SECRET_KEY, algorithm=ALGORITHM)
+
+def create_token_pair(user_id: str) -> dict:
+    """Create both access and refresh tokens"""
+    access_token = create_access_token(user_id)
+    refresh_token = create_refresh_token(user_id)
+    
+    return {
+        "access_token": access_token,
+        "refresh_token": refresh_token,
+        "token_type": "bearer",
+        "expires_in": ACCESS_TOKEN_EXPIRE_MINUTES * 60  # seconds
+    }
+
+def verify_token(token: str, token_type: str = "access") -> Optional[str]:
+    """Verify a token and return user_id if valid"""
+    try:
+        secret_key = SECRET_KEY if token_type == "access" else REFRESH_SECRET_KEY
+        payload = jwt.decode(token, secret_key, algorithms=[ALGORITHM])
+        
+        user_id: str = payload.get("sub")
+        token_type_claim: str = payload.get("type")
+        
+        if user_id is None or token_type_claim != token_type:
+            return None
+            
+        return user_id
+    except JWTError:
+        return None
 
 def get_user_by_id(user_id: str) -> Optional[Dict]:
     """Get a user by their ID"""
@@ -141,12 +188,14 @@ def get_user_trips(user_id: str) -> List[UserTrip]:
             tripStatus=trip["tripStatus"],
             memberCount=trip["memberCount"],
             role=trip["role"],
-            joinedAt=datetime.fromisoformat(trip["joinedAt"])
+            joinedAt=datetime.fromisoformat(trip["joinedAt"]),
+            destination=trip.get("destination"),
+            departureDate=trip.get("departureDate")
         )
         for trip in user_trips
     ]
 
-def add_user_to_trip(user_id: str, group_code: str, role: str = "member"):
+def add_user_to_trip(user_id: str, group_code: str, role: str = "member", destination: str = None, departure_date: str = None):
     """Add a user to a trip"""
     trips = load_user_trips()
     
@@ -168,13 +217,28 @@ def add_user_to_trip(user_id: str, group_code: str, role: str = "member"):
         # Fallback to 1 if we can't get group data
         member_count = 1
     
+    # Try to get destination info from trip group data if not provided
+    if not destination:
+        try:
+            from app.services import storage
+            trip_group = storage.get_trip_group(group_code)
+            if trip_group and trip_group.destinations:
+                # Join multiple destinations with commas or use the first one
+                destination = ", ".join(trip_group.destinations) if len(trip_group.destinations) > 1 else trip_group.destinations[0]
+                # departure_date is not stored in TripGroup model, leave as None for now
+                departure_date = None
+        except:
+            pass
+
     # Add trip
     trips[user_id].append({
         "groupCode": group_code,
         "tripStatus": "planning",
         "memberCount": member_count,
         "role": role,
-        "joinedAt": datetime.now().isoformat()
+        "joinedAt": datetime.now().isoformat(),
+        "destination": destination,
+        "departureDate": departure_date
     })
     
     # Update member count for all existing users in this trip
@@ -215,3 +279,31 @@ def update_all_trip_member_counts():
         print("Successfully updated all trip member counts")
     except Exception as e:
         print(f"Failed to update trip member counts: {e}") 
+
+def update_existing_user_trips_with_destinations():
+    """Update existing user trips to populate missing destination information"""
+    try:
+        from app.services import storage
+        trips = load_user_trips()
+        updated = False
+        
+        for user_id, user_trips in trips.items():
+            for trip in user_trips:
+                # Check if destination is missing
+                if not trip.get("destination"):
+                    try:
+                        trip_group = storage.get_trip_group(trip["groupCode"])
+                        if trip_group and trip_group.destinations:
+                            destination = ", ".join(trip_group.destinations) if len(trip_group.destinations) > 1 else trip_group.destinations[0]
+                            trip["destination"] = destination
+                            updated = True
+                    except Exception as e:
+                        print(f"Failed to update destination for trip {trip['groupCode']}: {e}")
+        
+        if updated:
+            save_user_trips(trips)
+            print("Successfully updated existing user trips with destination information")
+        else:
+            print("No user trips needed destination updates")
+    except Exception as e:
+        print(f"Failed to update existing user trips: {e}") 

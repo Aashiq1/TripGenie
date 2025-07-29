@@ -26,7 +26,7 @@ class TravelAgent:
 
     def __init__(self):
         self.llm = ChatOpenAI(
-            model="gpt-4.1",
+            model="gpt-4o",
             temperature=0.7,
             openai_api_key=os.getenv("OPENAI_API_KEY")
         )
@@ -117,15 +117,39 @@ class TravelAgent:
             }}
         }}
 
-        For each destination, calculate total flight costs and check arrival coordination.
+        IMPORTANT: Check the flight search results carefully. If flights are not found:
 
-        ==== STEP 2: SELECT BEST DESTINATION ====
+        1. **Review the search_summary** - Look for success_rate and failed_routes
+        2. **Check for flight_search_status** - If status is "NO_FLIGHTS_FOUND", explain this to the user
+        3. **If no flights found:**
+           - Acknowledge the issue: "I was unable to retrieve flight pricing and schedule information"
+           - Explain why: Mention test environment limitations, future dates, or route availability
+           - Provide alternatives from the recommendations in the response
+           - Suggest manual searches using the alternative_search_options provided
+           - DO NOT proceed with destination selection or trip planning
+
+        4. **If some flights found:** Proceed with destination comparison using available data
+
+        ==== STEP 2: HANDLE FLIGHT SEARCH RESULTS ====
+        
+        **If ALL flight searches failed:**
+        - Respond with: "I'm sorry, but I was unable to retrieve flight pricing and schedule information for [destinations] from the specified departure cities and dates. This is likely because [explain reason from flight_search_status]. 
+        
+        Here are some alternatives:
+        - [List recommendations from the flight search response]
+        - For manual flight searches, try: [List alternative_search_options]
+        
+        Without flight information, I cannot provide a complete group travel plan or confirm if the trip fits within your budget. Would you like to try different dates, destinations, or have me assist with other aspects of trip planning?"
+
+        **If SOME flights found:** Continue with destination selection using available flight data.
+
+        ==== STEP 3: SELECT BEST DESTINATION (Only if flights found) ====
         Choose the destination with:
         - Best total flight cost
         - Good arrival time coordination (within 3 hours)
         - Matches group interests
 
-        ==== STEP 3: SEARCH HOTELS ====
+        ==== STEP 4: SEARCH HOTELS (Only if destination selected) ====
         For the selected destination, use hotel_search tool:
         {{
             "destinations": ["XXX"],  // Use the 3-letter city code
@@ -135,34 +159,21 @@ class TravelAgent:
             "accommodation_details": {json.dumps(accommodation_details)}
         }}
 
-        Select a hotel that fits the budget and room configuration needs.
-
-        ==== STEP 4: GENERATE ACTIVITY ITINERARY ====
-        Use the itinerary_generator tool:
+        ==== STEP 5: CREATE ITINERARY (Only if hotel found) ====
+        Use itinerary_creator tool:
         {{
-            "destination": "City Name",  // Full city name, not code
+            "destinations": ["XXX"],
             "interests": {json.dumps(interests)},
+            "group_size": {group_size},
+            "trip_duration_days": {trip_duration},
             "travel_style": "{travel_style}",
-            "num_days": {trip_duration},
-            "trip_pace": "{trip_pace}"
+            "trip_pace": "{trip_pace}",
+            "budget_per_person": {(budget['budget_min'] + budget['budget_max']) // 2}
         }}
 
-        This will return:
-        - Daily activities with booking links
-        - Activity costs in USD
-        - Total activity budget
+        Check if activities fit within the remaining budget after flights and hotels.
 
-        ==== STEP 5: CALCULATE FINAL COSTS ====
-        For EACH person, calculate:
-        - Their flight cost (varies by departure city)
-        - Their hotel cost (varies by room type)
-        - Activity costs (from itinerary tool)
-        - Food estimate ($100/day)
-        - TOTAL
-
-        Verify everyone is within their ${budget['budget_min']}-${budget['budget_max']} budget.
-
-        ==== STEP 6: PRESENT COMPLETE PLAN ====
+        ==== STEP 6: PRESENT COMPLETE PLAN (Only if all data available) ====
 
         **SELECTED DESTINATION: [City]**
         Reasoning: [Why this destination won]
@@ -180,17 +191,6 @@ class TravelAgent:
         - Cost: $[AMOUNT] per person
         - Passengers: [List email addresses from flight group]
 
-        Example:
-        From LAX:
-        - Airline: Delta
-        - Flight: DL447
-        - Route: LAX→BCN
-        - Departure: June 15, 2024 at 10:15 AM
-        - Return Flight: DL448
-        - Return Departure: June 20, 2024 at 5:30 PM
-        - Cost: $580 per person
-        - Passengers: user1@email.com, user2@email.com
-
         **ACCOMMODATION**
         Hotel Name: [EXACT hotel name as it appears on booking sites]
         City: [City name]
@@ -200,16 +200,6 @@ class TravelAgent:
         Price: $[AMOUNT] per night per room
         Total Nights: [NUMBER]
         Total Hotel Cost: $[TOTAL_AMOUNT]
-        
-        Example:
-        Hotel Name: Hotel Barcelona Center
-        City: Barcelona
-        Check-in: 2024-06-15
-        Check-out: 2024-06-20
-        Room Configuration: 1 single, 2 doubles
-        Price: $140 per night per room
-        Total Nights: 5
-        Total Hotel Cost: $2100 (for all rooms)
 
         **ACTIVITY ITINERARY**
         For each day, list activities with EXACT names and booking details:
@@ -220,40 +210,6 @@ class TravelAgent:
         Duration: [X] hours
         Price: $[AMOUNT] per person
         Booking Platform: [Viator/GetYourGuide/TripAdvisor/etc]
-        Booking URL: [Full URL if available from itinerary tool]
-        
-        Example:
-        Day 1 - June 15, 2024:
-        Activity: Sagrada Familia Skip-the-Line Tour
-        Description: Guided tour of Gaudi's masterpiece
-        Duration: 2 hours
-        Price: $45 per person
-        Booking Platform: GetYourGuide
-        Booking URL: https://www.getyourguide.com/barcelona-l45/sagrada-familia-tour
-        
-        Activity: Barcelona Tapas Walking Tour
-        Description: Evening food tour in Gothic Quarter
-        Duration: 3 hours
-        Price: $75 per person
-        Booking Platform: Viator
-        Booking URL: https://www.viator.com/tours/Barcelona/tapas-tour
-        
-        [Continue for all days]
-
-        Total Activity Cost: $[Amount] per person
-
-        **BOOKING LINKS SUMMARY**
-        Flight Bookings:
-        - Use airline websites for best prices
-        - Alternative: Google Flights, Kayak
-
-        Hotel Booking:
-        - Check hotel website directly
-        - Alternative: Booking.com, Hotels.com
-
-        Activities with direct booking:
-        - [Activity name]: [Platform] - [URL]
-        [List all bookable activities]
 
         **FINAL COST BREAKDOWN**
         For each passenger email:
@@ -264,11 +220,11 @@ class TravelAgent:
         - Food: $[amount]
         - TOTAL: $[amount] ✓ Within budget
 
-        **IMPORTANT**: 
-        - Include specific flight numbers (e.g., DL447, UA120)
-        - Use airport codes (e.g., LAX, JFK, BCN)
-        - List exact costs for each component
-        - Different people will have different totals due to flight origins and room choices
+        **CRITICAL REMINDERS:**
+        - ALWAYS check flight search status before proceeding
+        - If no flights found, explain the issue and provide alternatives
+        - Don't create incomplete plans - be transparent about what data is missing
+        - Provide helpful next steps even when searches fail
         """
 
         try:

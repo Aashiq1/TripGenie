@@ -77,11 +77,25 @@ class TripGroup(BaseModel):
         destinations (List[str]): 1-3 destinations chosen by the trip creator.
         creator_email (str): Email of the user who created the group.
         created_at (str): Timestamp when the group was created.
+        trip_name (Optional[str]): Name of the trip.
+        departure_date (Optional[str]): Departure date in YYYY-MM-DD format.
+        return_date (Optional[str]): Return date in YYYY-MM-DD format.
+        budget (Optional[int]): Budget per person in USD.
+        group_size (Optional[int]): Expected group size.
+        accommodation (Optional[str]): Accommodation preference.
+        description (Optional[str]): Trip description.
     """
     group_code: str
     destinations: List[str]  # 1-3 destinations set by creator
     creator_email: str
     created_at: str
+    trip_name: Optional[str] = None
+    departure_date: Optional[str] = None
+    return_date: Optional[str] = None
+    budget: Optional[int] = None
+    group_size: Optional[int] = None
+    accommodation: Optional[str] = None
+    description: Optional[str] = None
 
 class GroupInput(BaseModel):
     """

@@ -6,7 +6,8 @@ load_dotenv()
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from app.api import inputs, auth
+from app.api import inputs, auth, trip
+# from app.api import trip_refinement_endpoints  # Temporarily disabled due to type annotation issue
 
 # Initialize FastAPI app
 app = FastAPI(
@@ -27,6 +28,8 @@ app.add_middleware(
 # Include API routers
 app.include_router(inputs.router, prefix="/inputs")
 app.include_router(auth.router, prefix="/auth")
+app.include_router(trip.router, prefix="/trip")
+# app.include_router(trip_refinement_endpoints.router)  # Temporarily disabled
 
 @app.get("/")
 async def root():

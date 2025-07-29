@@ -6,7 +6,7 @@ These are the URLs your frontend will call.
 
 from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel
-from typing import Dict, Optional, List
+from typing import Dict, Optional, List, Any
 
 from app.services.trip_refinement_chat import refinement_service
 from app.services import storage  # Your storage service for getting trip plans
@@ -150,7 +150,7 @@ async def get_chat_history(
 async def apply_refinement_changes(
     group_code: str,
     user_email: str,
-    changes: Dict[str, any]
+    changes: Dict[str, Any]
 ) -> Dict:
     """
     Apply the changes discussed in chat to the actual trip.
