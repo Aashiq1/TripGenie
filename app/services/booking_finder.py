@@ -2,10 +2,11 @@
 """Service for finding specific booking links for flights and hotels."""
 
 from typing import Dict, List, Optional
-from app.services.tavily_client import TavilyClient
+# DISABLED: Old Tavily search - will be replaced with direct API integration
+# from app.services.tavily_client import TavilyClient
 
 class BookingFinderService:
-    """Find specific booking links for flights and hotels using Tavily."""
+    """Find specific booking links for flights and hotels using direct APIs."""
     
     FLIGHT_BOOKING_DOMAINS = [
         "delta.com", "united.com", "aa.com", 
@@ -23,8 +24,10 @@ class BookingFinderService:
         "priceline.com", "trivago.com", "hotelscombined.com"
     ]
     
-    def __init__(self, tavily_client: Optional[TavilyClient] = None):
-        self.client = tavily_client or TavilyClient()
+    def __init__(self, tavily_client: Optional = None):
+        # DISABLED: Tavily client removed during rebuild
+        # self.client = tavily_client or TavilyClient()
+        self.client = None
     
     def find_flight_booking_links(self, flight_data: Dict) -> Dict:
         """
@@ -59,16 +62,20 @@ class BookingFinderService:
         
         all_results = []
         
-        for query in search_queries:
-            results = self.client.search(
-                query=query,
-                max_results=5,
-                search_depth="basic",
-                include_domains=self.FLIGHT_BOOKING_DOMAINS
-            )
-            
-            if results and results.get("results"):
-                all_results.extend(results["results"])
+        # DISABLED: Tavily search removed during rebuild
+        # for query in search_queries:
+        #     results = self.client.search(
+        #         query=query,
+        #         max_results=5,
+        #         search_depth="basic",
+        #         include_domains=self.FLIGHT_BOOKING_DOMAINS
+        #     )
+        #     
+        #     if results and results.get("results"):
+        #         all_results.extend(results["results"])
+        
+        # Return empty results during rebuild
+        all_results = []
         
         # Parse results
         booking_links = self._parse_flight_results(all_results, flight_data)

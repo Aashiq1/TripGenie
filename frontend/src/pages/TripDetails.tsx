@@ -63,6 +63,74 @@ function hasTripPlan(tripPlan: any): boolean {
   return tripPlan && tripPlan.agent_response
 }
 
+// Helper function to transform backend itinerary data to frontend format
+function transformItineraryData(tripPlan: any): ItineraryItem[] {
+  if (!tripPlan) return []
+  
+  try {
+    let parsedData = null
+    
+    // Case 1: Data is already structured (newer format)
+    if (tripPlan.daily_itinerary || (tripPlan.MAD && tripPlan.MAD.daily_itinerary)) {
+      parsedData = tripPlan
+    }
+    // Case 2: Data is in agent_response as JSON string (older format)
+    else if (tripPlan.agent_response) {
+      const agentResponse = tripPlan.agent_response
+      const jsonMatch = agentResponse.match(/\{[\s\S]*\}/)
+      if (!jsonMatch) return []
+      parsedData = JSON.parse(jsonMatch[0])
+    }
+    
+    if (!parsedData) return []
+    
+    // Find the daily_itinerary data (could be nested under destination)
+    let dailyItinerary = parsedData.daily_itinerary
+    if (!dailyItinerary) {
+      // Try to find it under destination keys (MAD, BCN, etc.)
+      const destKeys = Object.keys(parsedData)
+      for (const key of destKeys) {
+        if (parsedData[key]?.daily_itinerary) {
+          dailyItinerary = parsedData[key].daily_itinerary
+          break
+        }
+      }
+    }
+    
+    if (!dailyItinerary) return []
+    
+    // Transform to frontend format
+    const itineraryItems: ItineraryItem[] = []
+    
+    Object.keys(dailyItinerary).forEach(dayKey => {
+      if (dayKey.startsWith('day_') && dailyItinerary[dayKey].activities) {
+        const dayData = dailyItinerary[dayKey]
+        const dayNumber = dayData.day_number || parseInt(dayKey.replace('day_', ''))
+        
+        const activities = dayData.activities?.map((activity: any, index: number) => ({
+          time: '09:00', // Default time since backend doesn't provide specific times
+          title: activity.name || 'Activity',
+          description: activity.description || `${activity.interest_category || ''} ${activity.activity_type || ''}`.trim(),
+          type: 'activity' as const,
+          confirmed: !!activity.booking_info // Consider it confirmed if it has booking info
+        })) || []
+        
+        itineraryItems.push({
+          id: dayKey,
+          day: dayNumber,
+          date: dayData.day_label || `Day ${dayNumber}`,
+          activities
+        })
+      }
+    })
+    
+    return itineraryItems.sort((a, b) => a.day - b.day)
+  } catch (error) {
+    console.error('Error parsing itinerary data:', error)
+    return []
+  }
+}
+
 export function TripDetails() {
   const { groupCode } = useParams<{ groupCode: string }>()
   const { user } = useAuthStore()
@@ -121,7 +189,7 @@ export function TripDetails() {
               role: user.role || 'member',
               joinedAt: user.submitted_at || new Date().toISOString()
             })) || [],
-            itinerary: [] // Keep empty for now, will add trip plan in separate section
+            itinerary: [] // Will be updated when trip plan is processed
           }
           
           setTrip(transformedTrip)
@@ -150,6 +218,15 @@ export function TripDetails() {
 
     fetchTripDetails()
   }, [groupCode])
+
+  useEffect(() => {
+    if (tripPlan) {
+      setTrip(prev => prev ? {
+        ...prev,
+        itinerary: transformItineraryData(tripPlan)
+      } : null)
+    }
+  }, [tripPlan])
 
   const formatDate = (dateString: string) => {
     if (!dateString) return 'Not set'

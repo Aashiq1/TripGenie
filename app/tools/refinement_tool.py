@@ -10,7 +10,8 @@ from langchain.tools import Tool
 
 from app.services.amadeus_flights import get_flight_offers
 from app.services.amadeus_hotels import get_hotel_offers
-from app.services.activity_search import ActivitySearchService
+# DISABLED: Old Tavily-based activity search - will be replaced with new multi-API system
+# from app.services.activity_search import ActivitySearchService
 
 
 class FlightAlternativesTool:
@@ -212,21 +213,22 @@ class ActivityFinderTool:
                 interests = ["general"]
             
             # Search using existing service
-            activity_search = ActivitySearchService()
-            results = activity_search.search_activities(
-                destination=self.current_itinerary.get('destination', 'Barcelona'),
-                interests=interests,
-                travel_style=self.preferences.get('travel_style', 'standard'),
-                num_days=1,  # Just search, not full itinerary
-                trip_pace=self.preferences.get('trip_pace', 'balanced')
-            )
+            # activity_search = ActivitySearchService()
+            # results = activity_search.search_activities(
+            #     destination=self.current_itinerary.get('destination', 'Barcelona'),
+            #     interests=interests,
+            #     travel_style=self.preferences.get('travel_style', 'standard'),
+            #     num_days=1,  # Just search, not full itinerary
+            #     trip_pace=self.preferences.get('trip_pace', 'balanced')
+            # )
             
             # Extract all activities
             all_activities = []
-            for day_data in results.get('daily_itinerary', {}).values():
-                if isinstance(day_data, dict) and 'activities' in day_data:
-                    all_activities.extend(day_data['activities'])
+            # for day_data in results.get('daily_itinerary', {}).values():
+            #     if isinstance(day_data, dict) and 'activities' in day_data:
+            #         all_activities.extend(day_data['activities'])
             
+            # TEMPORARY: Activity search disabled during rebuild
             if all_activities:
                 response = f"Found activities matching '{query}':\n\n"
                 
@@ -253,7 +255,7 @@ class ActivityFinderTool:
                 
                 return response
             else:
-                return f"No activities found matching '{query}'. Try different keywords."
+                return f"Activity search is temporarily disabled during system rebuild. Please check back soon for enhanced activity search with multiple booking platforms."
                 
         except Exception as e:
             return f"Error searching activities: {str(e)}"

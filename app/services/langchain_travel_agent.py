@@ -16,7 +16,8 @@ from langchain_openai import ChatOpenAI
 
 from app.tools.amadeus_flight_tool import AmadeusFlightTool
 from app.tools.amadeus_hotel_tool import HotelSearchTool
-from app.tools.tavily_itinerary_tool import ItineraryTool
+# DISABLED: Old Tavily-based itinerary tool - will be replaced with new multi-API system  
+# from app.tools.tavily_itinerary_tool import ItineraryTool
 
 # Load environment variables
 load_dotenv()
@@ -34,7 +35,8 @@ class TravelAgent:
         # Instantiate tool wrappers
         self.flight_tool = AmadeusFlightTool()
         self.hotel_tool = HotelSearchTool()
-        self.itinerary_tool = ItineraryTool()
+        # DISABLED: Old Tavily-based itinerary tool - will be replaced with new multi-API system
+        # self.itinerary_tool = ItineraryTool()
 
         # Convert tools to LangChain format
         self.tools = [
@@ -48,11 +50,12 @@ class TravelAgent:
                 description=self.hotel_tool.description,
                 func=self.hotel_tool._call
             ),
-            Tool(
-                name=self.itinerary_tool.name,
-                description=self.itinerary_tool.description,
-                func=self.itinerary_tool._call
-            )
+            # DISABLED: Itinerary tool removed during rebuild
+            # Tool(
+            #     name=self.itinerary_tool.name,
+            #     description=self.itinerary_tool.description,
+            #     func=self.itinerary_tool._call
+            # )
         ]
 
         self.memory = ConversationBufferMemory(

@@ -9,7 +9,8 @@ import re
 
 from app.services.agent_parser import AgentResponseParser
 from app.services.booking_finder import BookingFinderService
-from app.services.tavily_client import TavilyClient
+# DISABLED: Old Tavily search - will be replaced with direct API integration
+# from app.services.tavily_client import TavilyClient
 
 logger = logging.getLogger(__name__)
 
@@ -23,7 +24,9 @@ class CompleteBookingIntegration:
     def __init__(self):
         self.parser = AgentResponseParser()
         self.booking_finder = BookingFinderService()
-        self.tavily_client = TavilyClient()
+        # DISABLED: Tavily client removed during rebuild  
+        # self.tavily_client = TavilyClient()
+        self.tavily_client = None
     
     async def extract_all_booking_links(self, trip_plan: Dict) -> Dict:
         """
@@ -198,19 +201,23 @@ class CompleteBookingIntegration:
     async def _find_activity_links(self, activity_name: str, destination: str) -> List[Dict]:
         """Find booking links for an activity."""
         try:
-            query = f"{activity_name} {destination} book tickets"
+            # DISABLED: Tavily search removed during rebuild
+            # query = f"{activity_name} {destination} book tickets"
+            # 
+            # results = self.tavily_client.search_with_retry(
+            #     query=query,
+            #     max_results=5,
+            #     include_domains=[
+            #         "viator.com", "getyourguide.com", "tripadvisor.com",
+            #         "klook.com", "tiqets.com", "headout.com"
+            #     ]
+            # )
+            # 
+            # if not results:
+            #     return []
             
-            results = self.tavily_client.search_with_retry(
-                query=query,
-                max_results=5,
-                include_domains=[
-                    "viator.com", "getyourguide.com", "tripadvisor.com",
-                    "klook.com", "tiqets.com", "headout.com"
-                ]
-            )
-            
-            if not results:
-                return []
+            # Return empty results during rebuild
+            results = {"results": []}
             
             links = []
             for result in results.get('results', [])[:3]:

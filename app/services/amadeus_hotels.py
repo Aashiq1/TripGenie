@@ -5,6 +5,10 @@ import os
 from typing import List, Dict, Optional
 from datetime import datetime
 
+# Load environment variables FIRST
+from dotenv import load_dotenv
+load_dotenv()
+
 # Initialize the Amadeus API client
 amadeus = Client(
     client_id=os.getenv("AMADEUS_CLIENT_ID"),
@@ -59,77 +63,103 @@ def get_hotel_offers(
             # If no hotels match criteria, use first 10
             filtered_hotels = [h['hotelId'] for h in hotels_response.data[:10]]
         
-        # Step 2: Search for offers at these hotels
-        offers_response = amadeus.shopping.hotel_offers_search.get(
-            hotelIds=filtered_hotels[:10],  # Limit to 10 hotels
-            checkInDate=check_in_date,
-            checkOutDate=check_out_date,
-            adults=1,  # Search for base price
-            roomQuantity=1,
-            currency='USD'
-        )
-        
+        # Step 2: Search for offers at these hotels - TRY INDIVIDUALLY
         # Calculate number of nights
         check_in = datetime.strptime(check_in_date, '%Y-%m-%d')
         check_out = datetime.strptime(check_out_date, '%Y-%m-%d')
         num_nights = (check_out - check_in).days
         
-        # Format results
         hotels = []
-        for hotel_data in offers_response.data:
-            hotel_info = hotel_data['hotel']
-            
-            # Parse available room types from all offers
-            room_types_available = {}
-            
-            for offer in hotel_data.get('offers', []):
-                try:
-                    # Handle different API response structures
-                    room_info = offer.get('room', {})
-                    
-                    if 'typeEstimated' in room_info:
-                        # New API structure
-                        type_estimated = room_info['typeEstimated']
-                        room_category = type_estimated.get('category', 'STANDARD')
-                        beds = type_estimated.get('beds', 1)
-                        bed_type = type_estimated.get('bedType', 'UNKNOWN')
-                    else:
-                        # Fallback for older API structure
-                        room_category = room_info.get('category', 'STANDARD')
-                        beds = room_info.get('beds', 1)
-                        bed_type = room_info.get('bedType', 'UNKNOWN')
-                    
-                    # Estimate capacity based on beds and type
-                    capacity = estimate_room_capacity(beds, bed_type, room_category)
-                    room_key = f"{room_category}_{capacity}"
-                    
-                    if room_key not in room_types_available:
-                        room_types_available[room_key] = {
-                            'category': room_category,
-                            'capacity': capacity,
-                            'beds': beds,
-                            'bed_type': bed_type,
-                            'base_price': float(offer['price']['total']),
-                            'price_per_night': float(offer['price']['total']) / num_nights,
-                            'cancellation': offer.get('policies', {}).get('cancellation', {}).get('type', 'Unknown')
-                        }
-                except (KeyError, TypeError) as e:
-                    print(f"Error parsing hotel offer: {e}")
-                    # Continue with next offer
-                    continue
-            
-            hotels.append({
-                'hotel_id': hotel_info['hotelId'],
-                'hotel_name': hotel_info['name'],
-                'hotel_rating': hotel_info.get('rating', 'Unrated'),
-                'latitude': hotel_info.get('latitude'),
-                'longitude': hotel_info.get('longitude'),
-                'address': hotel_info.get('address', {}).get('lines', ['Address not available'])[0],
-                'room_types_available': room_types_available,
-                'accommodation_type': accommodation_preference,
-                'num_nights': num_nights
-            })
+        successful_searches = 0
+        max_hotels_to_try = min(15, len(filtered_hotels))  # Try up to 15 hotels
         
+        for hotel_id in filtered_hotels[:max_hotels_to_try]:
+            try:
+                # Search one hotel at a time to handle availability issues
+                offers_response = amadeus.shopping.hotel_offers_search.get(
+                    hotelIds=[hotel_id],  # Search one hotel at a time
+                    checkInDate=check_in_date,
+                    checkOutDate=check_out_date,
+                    adults=1,  # Search for base price
+                    roomQuantity=1,
+                    currency='USD'
+                )
+                
+                # If we get here, this hotel has availability
+                for hotel_data in offers_response.data:
+                    hotel_info = hotel_data['hotel']
+                    
+                    # Parse available room types from all offers
+                    room_types_available = {}
+                    
+                    for offer in hotel_data.get('offers', []):
+                        try:
+                            room = offer['room']
+                            bed_info = room.get('description', {}).get('text', '')
+                            
+                            # Extract basic room info
+                            category = room.get('typeEstimated', {}).get('category', 'STANDARD_ROOM')
+                            beds = room.get('typeEstimated', {}).get('beds', 2)
+                            
+                            # Estimate capacity
+                            capacity = estimate_room_capacity(beds, bed_info, category)
+                            
+                            # Get price info
+                            price_info = offer.get('price', {})
+                            base_price = float(price_info.get('base', 0))
+                            total_price = float(price_info.get('total', base_price))
+                            
+                            # Create room type key
+                            room_key = f"{category}_{capacity}pax"
+                            
+                            if room_key not in room_types_available:
+                                room_types_available[room_key] = {
+                                    'capacity': capacity,
+                                    'category': category,
+                                    'base_price_per_night': base_price,
+                                    'total_price_per_night': total_price,
+                                    'bed_info': bed_info,
+                                    'available_rooms': 1
+                                }
+                        except (KeyError, TypeError, ValueError) as e:
+                            print(f"Error parsing hotel offer: {e}")
+                            # Continue with next offer
+                            continue
+                
+                    hotels.append({
+                        'hotel_id': hotel_info['hotelId'],
+                        'hotel_name': hotel_info['name'],
+                        'hotel_rating': hotel_info.get('rating', 'Unrated'),
+                        'latitude': hotel_info.get('latitude'),
+                        'longitude': hotel_info.get('longitude'),
+                        'address': hotel_info.get('address', {}).get('lines', ['Address not available'])[0],
+                        'room_types_available': room_types_available,
+                        'accommodation_type': accommodation_preference,
+                        'num_nights': num_nights
+                    })
+                    
+                    successful_searches += 1
+                    
+                    # Stop after finding 5 good hotels
+                    if successful_searches >= 5:
+                        break
+                        
+            except ResponseError as e:
+                if "NO ROOMS AVAILABLE" in str(e):
+                    print(f"No rooms available at hotel {hotel_id}, trying next hotel...")
+                    continue  # Try next hotel
+                else:
+                    print(f"Hotel search error for {hotel_id}: {e}")
+                    continue  # Try next hotel
+            except Exception as e:
+                print(f"Error searching hotel {hotel_id}: {e}")
+                continue  # Try next hotel
+        
+        if not hotels:
+            print(f"No hotels with availability found in {city_code}")
+        else:
+            print(f"Found {len(hotels)} hotels with availability in {city_code}")
+            
         return hotels
         
     except ResponseError as e:

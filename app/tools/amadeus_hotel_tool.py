@@ -80,7 +80,7 @@ class HotelSearchTool:
                             )
                             available_rooms[room_type_name] = {
                                 'capacity': room_data['capacity'],
-                                'base_price': room_data['price_per_night']
+                                'base_price': room_data.get('base_price_per_night', room_data.get('total_price_per_night', 100))
                             }
                         
                         # If no rooms found, use standard types
