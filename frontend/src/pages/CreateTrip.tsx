@@ -18,7 +18,7 @@ import { useAuthStore } from '../stores/authStore'
 
 interface TripFormData {
   tripName: string
-  destinations: string[]
+  destination: string
   departureDate: string
   returnDate: string
   budget: string
@@ -35,7 +35,7 @@ export function CreateTrip() {
   const [createdTrip, setCreatedTrip] = useState<{ groupCode: string } | null>(null)
   const [formData, setFormData] = useState<TripFormData>({
     tripName: '',
-    destinations: ['', '', ''],
+    destination: '',
     departureDate: '',
     returnDate: '',
     budget: '',
@@ -71,12 +71,8 @@ export function CreateTrip() {
     setFormData(prev => ({ ...prev, [field]: value }))
   }
 
-  const updateDestination = (index: number, value: string) => {
-    setFormData(prev => {
-      const newDestinations = [...prev.destinations]
-      newDestinations[index] = value
-      return { ...prev, destinations: newDestinations }
-    })
+  const updateDestination = (value: string) => {
+    setFormData(prev => ({ ...prev, destination: value }))
   }
 
   const handleNext = () => {
@@ -96,17 +92,13 @@ export function CreateTrip() {
     try {
       const { tripAPI } = await import('../services/api')
       
-      // Filter out empty destinations
-      const validDestinations = formData.destinations.filter(dest => dest.trim() !== '')
-      
-      // Generate a unique group code based on first destination
-      const firstDestination = validDestinations[0] || 'TRIP'
+      // Generate a unique group code based on destination
       const groupCode = `TRIP-${Math.random().toString(36).substr(2, 6).toUpperCase()}`
       
       // Create the trip data with ALL form data in the format expected by TripGroup model
       const tripData = {
         group_code: groupCode,
-        destinations: validDestinations,
+        destination: formData.destination,
         creator_email: user?.email || '',
         created_at: new Date().toISOString(),
         trip_name: formData.tripName,
@@ -133,8 +125,6 @@ export function CreateTrip() {
         (error as any)?.response?.data?.detail || 'Unknown error occurred'
       alert(`Failed to create trip: ${errorMessage}`)
       // Generate fallback group code for graceful degradation
-      const validDestinations = formData.destinations.filter(dest => dest.trim() !== '')
-      const firstDestination = validDestinations[0] || 'TRIP'
       const fallbackGroupCode = `TRIP-${Math.random().toString(36).substr(2, 6).toUpperCase()}`
       setCreatedTrip({ groupCode: fallbackGroupCode })
     } finally {
@@ -309,28 +299,18 @@ export function CreateTrip() {
 
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-2">
-                    Destinations (1-3 locations)
+                    Destination
                   </label>
-                  <div className="space-y-3">
-                    {formData.destinations.map((destination, index) => (
-                      <div key={index}>
-                        <input
-                          type="text"
-                          value={destination}
-                          onChange={(e) => updateDestination(index, e.target.value)}
-                          placeholder={
-                            index === 0 
-                              ? "Primary destination (required)" 
-                              : `Optional destination ${index + 1}`
-                          }
-                          className="input-field"
-                          required={index === 0}
-                        />
-                      </div>
-                    ))}
-                  </div>
+                  <input
+                    type="text"
+                    value={formData.destination}
+                    onChange={(e) => updateDestination(e.target.value)}
+                    placeholder="Where do you want to go? (e.g., Barcelona, Tokyo, Paris)"
+                    className="input-field"
+                    required
+                  />
                   <p className="text-sm text-gray-500 mt-1">
-                    Add 1-3 destinations for your trip. At least one is required.
+                    Enter your trip destination.
                   </p>
                 </div>
 
@@ -488,9 +468,9 @@ export function CreateTrip() {
                       <div className="font-medium">{formData.tripName}</div>
                     </div>
                     <div>
-                      <div className="text-sm text-gray-600">Destinations</div>
+                      <div className="text-sm text-gray-600">Destination</div>
                       <div className="font-medium">
-                        {formData.destinations.filter(dest => dest.trim() !== '').join(', ') || 'None specified'}
+                        {formData.destination || 'None specified'}
                       </div>
                     </div>
                     <div>
@@ -549,7 +529,7 @@ export function CreateTrip() {
               <button
                 onClick={handleNext}
                 disabled={
-                  (currentStep === 0 && (!formData.tripName || !formData.destinations[0].trim())) ||
+                  (currentStep === 0 && (!formData.tripName || !formData.destination.trim())) ||
                   (currentStep === 1 && (!formData.departureDate || !formData.returnDate))
                 }
                 className="btn-primary flex items-center space-x-2 disabled:opacity-50 disabled:cursor-not-allowed"

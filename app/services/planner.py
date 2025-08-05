@@ -4,21 +4,25 @@ from app.models.group_inputs import UserInput
 from app.services.ai_input import prepare_ai_input, get_best_ranges, get_group_preferences
 from app.services.langchain_travel_agent import travel_agent
 from app.services.booking_integration import get_all_booking_links  # NEW IMPORT
+from app.services.amadeus_location_lookup import get_airport_code_with_fallback  # NEW IMPORT FOR DYNAMIC IATA LOOKUP
 from app.tools.amadeus_flight_tool import AmadeusFlightTool  # NEW IMPORT FOR COST CHECKING
 from typing import List, Dict, Any
 import json
 
 # === HELPER FUNCTIONS ===
 
-def build_flight_requests_from_airports(airport_groups: Dict[str, List], destinations: List[str], departure_date: str, return_date: str) -> List[Dict]:
+def build_flight_requests_from_airports(airport_groups: Dict[str, List], destination: str, departure_date: str, return_date: str) -> List[Dict]:
     """Convert airport groups from ai_input into flight request format."""
     flight_groups = []
+    
+    # Convert city name to airport code for flight search using dynamic Amadeus lookup
+    airport_destination = get_airport_code_with_fallback(destination)
     
     for airport, users_info in airport_groups.items():
         flight_groups.append({
             "departure_city": airport,
             "passenger_count": len(users_info),
-            "destinations": destinations,
+            "destinations": [airport_destination],  # Use airport code for flights (keeping array format for flight tool compatibility)
             "departure_date": departure_date,
             "return_date": return_date,
             "passengers": [user["email"] for user in users_info],
@@ -27,7 +31,7 @@ def build_flight_requests_from_airports(airport_groups: Dict[str, List], destina
     
     return flight_groups
 
-async def calculate_date_range_cost(date_range: Dict, airport_groups: Dict, destinations: List[str], flight_preferences: Dict) -> Dict:
+async def calculate_date_range_cost(date_range: Dict, airport_groups: Dict, destination: str, flight_preferences: Dict) -> Dict:
     """
     Calculate preliminary total cost for a specific date range.
     Returns cost breakdown and total cost for comparison.
@@ -38,7 +42,7 @@ async def calculate_date_range_cost(date_range: Dict, airport_groups: Dict, dest
     try:
         # Build flight groups for this date range
         flight_groups = build_flight_requests_from_airports(
-            airport_groups, destinations, departure_date, return_date
+            airport_groups, destination, departure_date, return_date
         )
         
         # Use flight tool to get preliminary prices
@@ -62,9 +66,8 @@ async def calculate_date_range_cost(date_range: Dict, airport_groups: Dict, dest
                 status = flight_data["flight_search_status"]
                 if status.get("status") == "NO_FLIGHTS_FOUND":
                     print(f"  ❌ No flights found: {status.get('message', 'Unknown reason')}")
-                    for destination in destinations:
-                        flight_results[destination] = 999999  # Penalty cost
-                        total_flight_cost += 999999
+                    flight_results[destination] = 999999  # Penalty cost
+                    total_flight_cost += 999999
                     return {
                         "departure_date": departure_date,
                         "return_date": return_date,
@@ -76,17 +79,16 @@ async def calculate_date_range_cost(date_range: Dict, airport_groups: Dict, dest
                         "no_flights_reason": status.get('message', 'No flights found')
                     }
             
-            # Process results by destination
-            for destination in destinations:
-                destination_cost = 0
-                valid_flights_found = False
-                
-                # Sum costs for all departure cities to this destination
-                for group_key, dest_flights in flight_data.items():
-                    if group_key in ["flight_search_status", "errors_encountered", "search_summary"]:
-                        continue  # Skip metadata
-                        
-                    if destination in dest_flights:
+            # Process results for the destination
+            destination_cost = 0
+            valid_flights_found = False
+            
+            # Sum costs for all departure cities to this destination
+            for group_key, dest_flights in flight_data.items():
+                if group_key in ["flight_search_status", "errors_encountered", "search_summary"]:
+                    continue  # Skip metadata
+                    
+                if destination in dest_flights:
                         dest_data = dest_flights[destination]
                         
                         # Check if this is an error response
@@ -112,8 +114,7 @@ async def calculate_date_range_cost(date_range: Dict, airport_groups: Dict, dest
         except (json.JSONDecodeError, KeyError) as e:
             # If flight data is invalid, set to 0 - users can book manually
             print(f"  ❌ Failed to parse flight data: {e}")
-            for destination in destinations:
-                flight_results[destination] = 0
+            flight_results[destination] = 0
         
         return {
             "departure_date": departure_date,
@@ -138,7 +139,7 @@ async def calculate_date_range_cost(date_range: Dict, airport_groups: Dict, dest
             "error": str(e)
         }
 
-async def find_cheapest_date_range(best_ranges: List[Dict], airport_groups: Dict, destinations: List[str], flight_preferences: Dict) -> Dict:
+async def find_cheapest_date_range(best_ranges: List[Dict], airport_groups: Dict, destination: str, flight_preferences: Dict) -> Dict:
     """
     Test multiple date ranges and return the one with lowest total cost.
     """
@@ -154,7 +155,7 @@ async def find_cheapest_date_range(best_ranges: List[Dict], airport_groups: Dict
     for i, date_range in enumerate(ranges_to_test):
         print(f"  📅 Testing range {i+1}: {date_range['start_date'].strftime('%Y-%m-%d')} to {date_range['end_date'].strftime('%Y-%m-%d')}")
         
-        cost_result = await calculate_date_range_cost(date_range, airport_groups, destinations, flight_preferences)
+        cost_result = await calculate_date_range_cost(date_range, airport_groups, destination, flight_preferences)
         cost_results.append(cost_result)
         
         if cost_result["valid"]:
@@ -206,10 +207,10 @@ async def plan_trip(users: List[UserInput]) -> dict:
     group_code = users[0].group_code if users and users[0].group_code else 'DEFAULT_GROUP'
     trip_group = storage.get_trip_group(group_code)
     
-    if not trip_group or not trip_group.destinations:
-        return {"error": f"No destinations found for group {group_code}. Trip creator must set destinations first."}
+    if not trip_group or not trip_group.destination:
+        return {"error": f"No destination found for group {group_code}. Trip creator must set destination first."}
     
-    top_destinations = trip_group.destinations
+    destination = trip_group.destination
     
     # ===== USE PRE-AGGREGATED DATA FROM AI_INPUT =====
     
@@ -238,7 +239,7 @@ async def plan_trip(users: List[UserInput]) -> dict:
     cheapest_date_result = await find_cheapest_date_range(
         best_ranges, 
         group_profile["airport_groups"], 
-        top_destinations, 
+        destination, 
         flight_preferences
     )
     
@@ -252,7 +253,7 @@ async def plan_trip(users: List[UserInput]) -> dict:
     # Convert airport groups to flight requests using optimized dates
     flight_groups = build_flight_requests_from_airports(
         group_profile["airport_groups"], 
-        top_destinations, 
+        destination, 
         departure_date, 
         return_date
     )
@@ -268,7 +269,7 @@ async def plan_trip(users: List[UserInput]) -> dict:
 
     # Build final preferences object using pre-aggregated data
     user_preferences = {
-        "top_destinations": top_destinations,
+        "top_destinations": [destination],  # Keep original destination for activities (array format for compatibility)
         "group_size": group_profile["group_size"],
         
         # GROUP PREFERENCES (all pre-aggregated by ai_input.py)
@@ -302,7 +303,7 @@ async def plan_trip(users: List[UserInput]) -> dict:
 
     try:
         print("🧳 Trip Planning Summary:")
-        print(f"  📍 Destinations: {', '.join(top_destinations)}")
+        print(f"  📍 Destination: {destination}")
         print(f"  👥 Group size: {group_profile['group_size']} people")
         print(f"  📅 Optimized dates: {departure_date} to {return_date} ({trip_duration} days)")
         print(f"  ✈️ Departure airports: {list(group_profile['airport_groups'].keys())}")

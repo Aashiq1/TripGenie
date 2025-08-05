@@ -10,8 +10,7 @@ from langchain.tools import Tool
 
 from app.services.amadeus_flights import get_flight_offers
 from app.services.amadeus_hotels import get_hotel_offers
-# DISABLED: Old Tavily-based activity search - will be replaced with new multi-API system
-# from app.services.activity_search import ActivitySearchService
+from app.services.google_places_service import GooglePlacesService
 
 
 class FlightAlternativesTool:
@@ -194,68 +193,101 @@ class ActivityFinderTool:
         try:
             query_lower = query.lower()
             
-            # Extract interests from query
-            interests = []
-            interest_mapping = {
-                "food": ["food", "cooking", "culinary", "restaurant", "dining"],
-                "culture": ["museum", "art", "history", "culture", "heritage"],
-                "adventure": ["adventure", "outdoor", "hiking", "sports", "active"],
-                "nightlife": ["night", "club", "bar", "party", "evening"],
-                "relaxing": ["spa", "beach", "relax", "wellness"],
-                "shopping": ["shopping", "market", "boutique"]
+            # Map query keywords to Google Places interests
+            query_to_places_interests = {
+                "food": ["Food & Cuisine"],
+                "cooking": ["Food & Cuisine"],
+                "culinary": ["Food & Cuisine"],
+                "restaurant": ["Food & Cuisine"],
+                "dining": ["Food & Cuisine"],
+                "museum": ["Museums & Art"],
+                "art": ["Museums & Art"],
+                "history": ["History"],
+                "culture": ["Museums & Art", "History"],
+                "heritage": ["History"],
+                "adventure": ["Nature & Hiking"],
+                "outdoor": ["Nature & Hiking"],
+                "hiking": ["Nature & Hiking"],
+                "sports": ["Nature & Hiking"],
+                "active": ["Nature & Hiking"],
+                "night": ["Nightlife"],
+                "club": ["Nightlife"],
+                "bar": ["Nightlife"],
+                "party": ["Nightlife"],
+                "evening": ["Nightlife"],
+                "spa": ["Nature & Hiking"],  # Relaxation mapped to outdoor spaces
+                "beach": ["Beaches"],
+                "relax": ["Nature & Hiking"],
+                "wellness": ["Nature & Hiking"],
+                "shopping": ["Shopping"],
+                "market": ["Local Markets"],
+                "boutique": ["Shopping"],
+                "photo": ["Photography"],
+                "architecture": ["Architecture"]
             }
             
-            for interest, keywords in interest_mapping.items():
-                if any(keyword in query_lower for keyword in keywords):
-                    interests.append(interest)
+            # Extract interests from query
+            places_interests = set()
+            for keyword, mapped_interests in query_to_places_interests.items():
+                if keyword in query_lower:
+                    places_interests.update(mapped_interests)
             
-            if not interests:
-                interests = ["general"]
+            # Default to general interests if nothing specific found
+            if not places_interests:
+                places_interests = ["Museums & Art", "Food & Cuisine"]
             
-            # Search using existing service
-            # activity_search = ActivitySearchService()
-            # results = activity_search.search_activities(
-            #     destination=self.current_itinerary.get('destination', 'Barcelona'),
-            #     interests=interests,
-            #     travel_style=self.preferences.get('travel_style', 'standard'),
-            #     num_days=1,  # Just search, not full itinerary
-            #     trip_pace=self.preferences.get('trip_pace', 'balanced')
-            # )
+            # Use Google Places Service to search for activities
+            places_service = GooglePlacesService()
+            destination = self.current_itinerary.get('destination', 'Barcelona')
+            travel_style = self.preferences.get('travel_style', 'balanced')
             
-            # Extract all activities
-            all_activities = []
-            # for day_data in results.get('daily_itinerary', {}).values():
-            #     if isinstance(day_data, dict) and 'activities' in day_data:
-            #         all_activities.extend(day_data['activities'])
+            all_activities = places_service.search_activities_by_interest(
+                destination=destination,
+                interests=list(places_interests),
+                travel_style=travel_style
+            )
             
-            # TEMPORARY: Activity search disabled during rebuild
             if all_activities:
-                response = f"Found activities matching '{query}':\n\n"
+                response = f"Found {len(all_activities)} activities matching '{query}' in {destination}:\n\n"
                 
                 for i, activity in enumerate(all_activities[:5], 1):
-                    response += f"{i}. {activity['name']}\n"
+                    response += f"{i}. **{activity['name']}**\n"
                     
                     if activity.get('description'):
-                        response += f"   {activity['description'][:100]}...\n"
+                        response += f"   {activity['description']}\n"
                     
-                    if activity.get('duration'):
-                        response += f"   Duration: {activity['duration']} hours\n"
+                    response += f"   📍 {activity['location']['address']}\n"
+                    
+                    if activity.get('rating'):
+                        response += f"   ⭐ Rating: {activity['rating']}\n"
                     
                     if activity.get('price_info'):
-                        response += f"   Price: ${activity['price_info']['amount_usd']}/person\n"
+                        price_level = activity['price_info']['price_level']
+                        if price_level == "Free":
+                            response += f"   💰 Price: Free\n"
+                        else:
+                            response += f"   💰 Price: {price_level}\n"
                     
-                    if activity.get('is_bookable'):
-                        response += f"   Booking: Available on {activity.get('booking_platform', 'Direct')}\n"
+                    if activity.get('duration'):
+                        response += f"   ⏱️  Duration: {activity['duration']} hours\n"
+                    
+                    if activity.get('opening_hours', {}).get('open_now') is not None:
+                        status = "🟢 Open" if activity['opening_hours']['open_now'] else "🔴 Closed"
+                        response += f"   🕒 Status: {status}\n"
+                    
+                    if activity.get('website'):
+                        response += f"   🌐 Website: {activity['website']}\n"
                     
                     response += "\n"
                 
                 # Check if activity already exists
                 current_activities = self.current_itinerary.get('activities', [])
-                response += f"\nNote: You currently have {len(current_activities)} activities planned."
+                response += f"Note: You currently have {len(current_activities)} activities planned. "
+                response += "Would you like me to add any of these to your itinerary?"
                 
                 return response
             else:
-                return f"Activity search is temporarily disabled during system rebuild. Please check back soon for enhanced activity search with multiple booking platforms."
+                return f"No activities found matching '{query}' in {destination}. Try different keywords like 'museums', 'restaurants', 'outdoor activities', or 'nightlife'."
                 
         except Exception as e:
             return f"Error searching activities: {str(e)}"

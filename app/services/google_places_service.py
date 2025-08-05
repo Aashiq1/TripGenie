@@ -40,12 +40,12 @@ class GooglePlacesService:
                 "keywords": ["art museum", "history museum", "cultural center", "art gallery"]
             },
             "Nature & Hiking": {
-                "place_types": ["park", "natural_feature"],
+                "place_types": ["park", "national_park"],
                 "keywords": ["hiking trail", "nature park", "botanical garden", "scenic viewpoint"]
             },
             "Architecture": {
-                "place_types": ["church", "synagogue", "mosque", "place_of_worship"],
-                "keywords": ["historic building", "architecture", "cathedral", "historic site"]
+                "place_types": ["tourist_attraction", "museum"],
+                "keywords": ["historic building", "architecture", "modern architecture", "famous buildings", "architectural landmark"]
             },
             "Shopping": {
                 "place_types": ["shopping_mall", "store"],
@@ -56,20 +56,24 @@ class GooglePlacesService:
                 "keywords": ["local market", "farmers market", "food market", "traditional market"]
             },
             "History": {
-                "place_types": ["museum", "church", "cemetery"],
-                "keywords": ["historic site", "monument", "memorial", "heritage site"]
+                "place_types": ["museum", "tourist_attraction"],
+                "keywords": ["historic site", "monument", "memorial", "heritage site", "historical museum"]
             },
             "Photography": {
                 "place_types": ["tourist_attraction", "park"],
                 "keywords": ["scenic viewpoint", "photo spot", "panoramic view", "landmark"]
             },
             "Beaches": {
-                "place_types": ["natural_feature"],
+                "place_types": ["tourist_attraction"],
                 "keywords": ["beach", "waterfront", "coastal view", "seaside"]
             },
             "Nightlife": {
                 "place_types": ["bar", "night_club"],
                 "keywords": ["cocktail bar", "rooftop bar", "nightclub", "live music venue"]
+            },
+            "Adventure Sports": {
+                "place_types": ["tourist_attraction", "park"],
+                "keywords": ["adventure sports", "outdoor activities", "sports center", "adventure park", "climbing", "extreme sports"]
             }
         }
         

@@ -70,11 +70,11 @@ class UserInput(BaseModel):
 
 class TripGroup(BaseModel):
     """
-    Represents a trip group with destinations set by the creator.
+    Represents a trip group with destination set by the creator.
     
     Attributes:
         group_code (str): Unique identifier for the group.
-        destinations (List[str]): 1-3 destinations chosen by the trip creator.
+        destination (str): Destination chosen by the trip creator.
         creator_email (str): Email of the user who created the group.
         created_at (str): Timestamp when the group was created.
         trip_name (Optional[str]): Name of the trip.
@@ -86,7 +86,7 @@ class TripGroup(BaseModel):
         description (Optional[str]): Trip description.
     """
     group_code: str
-    destinations: List[str]  # 1-3 destinations set by creator
+    destination: str  # Single destination set by creator
     creator_email: str
     created_at: str
     trip_name: Optional[str] = None

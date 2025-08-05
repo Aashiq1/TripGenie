@@ -161,4 +161,38 @@ export const tripAPI = {
   },
 }
 
+// Activity API
+export const activityAPI = {
+  searchActivities: async (destination: string, interests: string[], travelStyle: string = 'balanced') => {
+    const response: AxiosResponse = await api.post('/activities/search', {
+      destination,
+      interests,
+      travel_style: travelStyle,
+    })
+    return response.data
+  },
+
+  searchActivitiesGet: async (destination: string, interests: string[], travelStyle: string = 'balanced') => {
+    const interestsString = interests.join(',')
+    const response: AxiosResponse = await api.get('/activities/search', {
+      params: {
+        destination,
+        interests: interestsString,
+        travel_style: travelStyle,
+      }
+    })
+    return response.data
+  },
+
+  getAvailableInterests: async () => {
+    const response: AxiosResponse = await api.get('/activities/interests')
+    return response.data
+  },
+
+  getDestinationPreview: async (destination: string) => {
+    const response: AxiosResponse = await api.get(`/activities/destination/${destination}`)
+    return response.data
+  },
+}
+
 export default api 

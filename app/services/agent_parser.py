@@ -341,43 +341,52 @@ class AgentResponseParser:
         
         return destinations[0] if destinations else None
     
-    def extract_activity_data(self, response: str) -> List[Dict]:
+    def extract_activity_data(self, response: str) -> Dict:
         """
-        Extract detailed activity information including booking URLs.
+        Extract detailed activity information and structure it for frontend consumption.
+        Returns data in daily_itinerary format expected by frontend.
         """
-        activities = []
+        daily_itinerary = {}
         
         # Look for activity itinerary section
         activity_section = self._extract_activity_section(response)
         if not activity_section:
-            return activities
+            return {"daily_itinerary": daily_itinerary}
         
-        # Parse each day's activities
-        day_pattern = r"Day\s+(\d+)\s*[-–]?\s*([^:]*?):(.*?)(?=Day\s+\d+|Total Activity Cost|$)"
+        # Parse each day's activities (avoid matching "Day X Total:" lines)
+        day_pattern = r"\*\*Day\s+(\d+):\*\*\s*(.*?)(?=\*\*Day\s+\d+|\*\*TOTAL|$)"
         day_matches = re.finditer(day_pattern, activity_section, re.IGNORECASE | re.DOTALL)
         
         for day_match in day_matches:
             day_num = int(day_match.group(1))
-            day_date = day_match.group(2).strip()
-            day_content = day_match.group(3)
+            day_content = day_match.group(2)
             
-            # Parse individual activities
+            # Parse individual activities for this day
             activities_in_day = self._parse_structured_activities(day_content, day_num)
-            activities.extend(activities_in_day)
+            
+            # Structure in the format frontend expects
+            day_key = f"day_{day_num}"
+            daily_itinerary[day_key] = {
+                "day_number": day_num,
+                "day_label": f"Day {day_num}",
+                "activities": activities_in_day
+            }
         
-        return activities
+        return {"daily_itinerary": daily_itinerary}
     
     def _extract_activity_section(self, response: str) -> Optional[str]:
         """Extract the activity itinerary section."""
         patterns = [
-            r"\*\*ACTIVITY ITINERARY\*\*(.*?)(?=\*\*[A-Z]|\Z)",
-            r"ACTIVITY ITINERARY(.*?)(?=BOOKING LINKS|FINAL|$)"
+            r"\*\*ACTIVITY ITINERARY.*?\*\*(.*?)(?=\*\*[A-Z]|\Z)",
+            r"ACTIVITY ITINERARY.*?(?=\n)(.*?)(?=BOOKING LINKS|FINAL|\*\*TOTAL|$)"
         ]
         
         for pattern in patterns:
             match = re.search(pattern, response, re.IGNORECASE | re.DOTALL)
             if match:
-                return match.group(0)  # Include header
+                # Return the full section including the header for day parsing
+                section_start = match.start()
+                return response[section_start:]
         
         return None
     
@@ -406,8 +415,15 @@ class AgentResponseParser:
         return activities
     
     def _parse_activity_block(self, block: str, day_num: int) -> Optional[Dict]:
-        """Parse a structured activity block."""
-        activity = {'day': day_num}
+        """Parse a structured activity block and format for frontend."""
+        activity = {
+            "name": "",
+            "description": "",
+            "activity_type": "activity",
+            "interest_category": "general",
+            "estimated_cost": 0,
+            "booking_info": None
+        }
         
         # Parse each field
         patterns = {
@@ -423,65 +439,91 @@ class AgentResponseParser:
             match = re.search(pattern, block, re.IGNORECASE)
             if match:
                 if field == 'duration':
-                    activity['duration_hours'] = float(match.group(1))
+                    activity['duration'] = float(match.group(1))
                 elif field == 'price':
-                    activity['price_per_person'] = int(match.group(1))
-                elif field == 'platform':
-                    activity['booking_platform'] = match.group(1).strip()
-                elif field == 'url':
-                    activity['booking_url'] = match.group(1).strip()
+                    activity['estimated_cost'] = int(match.group(1))
+                elif field == 'platform' or field == 'url':
+                    if not activity['booking_info']:
+                        activity['booking_info'] = {}
+                    if field == 'platform':
+                        activity['booking_info']['platform'] = match.group(1).strip()
+                    else:
+                        activity['booking_info']['url'] = match.group(1).strip()
                 else:
                     activity[field] = match.group(1).strip()
         
         # Only return if we have at least a name
-        if 'name' in activity:
-            activity['has_booking'] = 'booking_url' in activity
+        if activity['name']:
             return activity
         
         return None
     
     def _parse_activity_line(self, line: str, day_num: int) -> Optional[Dict]:
-        """Parse a single activity line."""
-        # Remove bullet points
-        line = re.sub(r'^[\-\*•]\s*', '', line).strip()
+        """Parse a single activity line and format for frontend."""
+        original_line = line
         
-        if not line:
+        # Remove bullet points and time stamps
+        line = re.sub(r'^[\-\*•]\s*', '', line).strip()
+        line = re.sub(r'^\d{1,2}:\d{2}\s*[-–]?\s*', '', line).strip()
+        
+        # Skip non-activity lines
+        if not line or line.startswith(('📍', '💰', '⭐', '⏱️', '📝', '🌐', 'Day', 'Total', '**Day')):
             return None
         
         activity = {
-            "day": day_num,
-            "has_booking": False
+            "name": "",
+            "description": "",
+            "activity_type": "activity", 
+            "interest_category": "general",
+            "estimated_cost": 0,
+            "booking_info": None
         }
         
-        # Extract URL if present
-        url_match = re.search(r'(https?://[^\s]+)', line)
-        if url_match:
-            activity['booking_url'] = url_match.group(1)
-            activity['has_booking'] = True
-            line = line.replace(url_match.group(1), '').strip()
+        # Extract activity name (often in **bold** format)
+        name_match = re.search(r'\*\*([^*]+)\*\*', line)
+        if name_match:
+            activity['name'] = name_match.group(1).strip()
+            # Remove the bold part from line for further processing
+            line = re.sub(r'\*\*[^*]+\*\*', '', line).strip()
+        else:
+            # If no bold formatting, try to extract before first emoji or special character
+            name_parts = re.split(r'[📍💰⭐⏱️📝🌐\$]', line)
+            if name_parts:
+                activity['name'] = name_parts[0].strip(' -–,')
         
-        # Extract price
-        price_match = re.search(r'\$(\d+)(?:/person|/pp)?', line)
+        # Only proceed if we have a valid name
+        if not activity['name'] or len(activity['name']) < 2:
+            return None
+        
+        # Extract price from original line
+        price_match = re.search(r'💰\s*(\d+)\s*per person|\$(\d+)(?:/person|/pp)?', original_line)
         if price_match:
-            activity['price_per_person'] = int(price_match.group(1))
-            line = line.replace(price_match.group(0), '').strip()
+            activity['estimated_cost'] = int(price_match.group(1) or price_match.group(2))
         
-        # Extract duration
-        duration_match = re.search(r'(\d+(?:\.\d+)?)\s*hours?', line)
+        # Extract duration from original line
+        duration_match = re.search(r'⏱️\s*(\d+(?:\.\d+)?)\s*h', original_line)
         if duration_match:
-            activity['duration_hours'] = float(duration_match.group(1))
-            line = line.replace(duration_match.group(0), '').strip()
+            activity['duration'] = float(duration_match.group(1))
         
-        # Extract platform if mentioned
-        platform_match = re.search(r'(?:on\s+|via\s+|through\s+)(Viator|GetYourGuide|TripAdvisor|Klook)', line, re.IGNORECASE)
-        if platform_match:
-            activity['booking_platform'] = platform_match.group(1)
-            line = line.replace(platform_match.group(0), '').strip()
+        # Extract rating from original line for description
+        rating_match = re.search(r'⭐\s*(\d+\.\d+)', original_line)
+        rating = rating_match.group(1) if rating_match else None
         
-        # Clean up the name
-        activity['name'] = line.strip(' -–,')
+        # Extract URL if present  
+        url_match = re.search(r'(https?://[^\s]+)', original_line)
+        if url_match:
+            activity['booking_info'] = {'url': url_match.group(1)}
         
-        return activity if activity['name'] else None
+        # Set description based on available info
+        desc_parts = []
+        if activity['estimated_cost'] > 0:
+            desc_parts.append(f"${activity['estimated_cost']} per person")
+        if rating:
+            desc_parts.append(f"Rating: {rating}★")
+        
+        activity['description'] = " | ".join(desc_parts) if desc_parts else "Activity details"
+        
+        return activity
     
     def _get_airline_from_code(self, code: str) -> str:
         """Get airline name from IATA code."""

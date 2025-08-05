@@ -6,7 +6,7 @@ load_dotenv()
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from app.api import inputs, auth, trip
+from app.api import inputs, auth, trip, activities
 # from app.api import trip_refinement_endpoints  # Temporarily disabled due to type annotation issue
 
 # Initialize FastAPI app
@@ -29,6 +29,7 @@ app.add_middleware(
 app.include_router(inputs.router, prefix="/inputs")
 app.include_router(auth.router, prefix="/auth")
 app.include_router(trip.router, prefix="/trip")
+app.include_router(activities.router, prefix="/activities")
 # app.include_router(trip_refinement_endpoints.router)  # Temporarily disabled
 
 @app.get("/")

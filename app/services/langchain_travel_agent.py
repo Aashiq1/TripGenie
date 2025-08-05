@@ -16,6 +16,7 @@ from langchain_openai import ChatOpenAI
 
 from app.tools.amadeus_flight_tool import AmadeusFlightTool
 from app.tools.amadeus_hotel_tool import HotelSearchTool
+from app.tools.activity_planning_tool import ActivityPlanningTool
 # DISABLED: Old Tavily-based itinerary tool - will be replaced with new multi-API system  
 # from app.tools.tavily_itinerary_tool import ItineraryTool
 
@@ -35,7 +36,8 @@ class TravelAgent:
         # Instantiate tool wrappers
         self.flight_tool = AmadeusFlightTool()
         self.hotel_tool = HotelSearchTool()
-        # DISABLED: Old Tavily-based itinerary tool - will be replaced with new multi-API system
+        self.activity_tool = ActivityPlanningTool()
+        # DISABLED: Old Tavily-based itinerary tool - replaced with new Google Places system
         # self.itinerary_tool = ItineraryTool()
 
         # Convert tools to LangChain format
@@ -50,12 +52,11 @@ class TravelAgent:
                 description=self.hotel_tool.description,
                 func=self.hotel_tool._call
             ),
-            # DISABLED: Itinerary tool removed during rebuild
-            # Tool(
-            #     name=self.itinerary_tool.name,
-            #     description=self.itinerary_tool.description,
-            #     func=self.itinerary_tool._call
-            # )
+            Tool(
+                name=self.activity_tool.name,
+                description=self.activity_tool.description,
+                func=self.activity_tool._call
+            )
         ]
 
         self.memory = ConversationBufferMemory(
@@ -91,6 +92,9 @@ class TravelAgent:
         travel_class = flight_preferences.get("travel_class", "economy")
         nonstop_preferred = flight_preferences.get("nonstop_preferred", False)
         
+        # Use destination directly (now stores original user input like "Madrid")
+        activity_destination = top_destinations[0] if top_destinations else 'Barcelona'
+        
         # Get accommodation details
         group_accommodation_style = user_preferences.get("group_accommodation_style", "standard")
         accommodation_details = user_preferences.get("accommodation_details", [])
@@ -108,7 +112,7 @@ class TravelAgent:
         - Trip pace: {trip_pace}
         - Interests: {', '.join(interests)}
 
-        DESTINATIONS TO COMPARE: {', '.join(top_destinations)}
+        DESTINATION: {top_destinations[0] if top_destinations else 'Barcelona'}
 
         ==== STEP 1: SEARCH FLIGHTS ====
         Use the flight_prices tool:
@@ -131,55 +135,50 @@ class TravelAgent:
            - Suggest manual searches using the alternative_search_options provided
            - DO NOT proceed with destination selection or trip planning
 
-        4. **If some flights found:** Proceed with destination comparison using available data
+        4. **If some flights found:** Proceed with trip planning using available data
 
         ==== STEP 2: HANDLE FLIGHT SEARCH RESULTS ====
         
         **If ALL flight searches failed:**
-        - Respond with: "I'm sorry, but I was unable to retrieve flight pricing and schedule information for [destinations] from the specified departure cities and dates. This is likely because [explain reason from flight_search_status]. 
+        - Respond with: "I'm sorry, but I was unable to retrieve flight pricing and schedule information for {top_destinations[0] if top_destinations else 'the destination'} from the specified departure cities and dates. This is likely because [explain reason from flight_search_status]. 
         
         Here are some alternatives:
         - [List recommendations from the flight search response]
         - For manual flight searches, try: [List alternative_search_options]
         
-        Without flight information, I cannot provide a complete group travel plan or confirm if the trip fits within your budget. Would you like to try different dates, destinations, or have me assist with other aspects of trip planning?"
+        Without flight information, I cannot provide a complete group travel plan or confirm if the trip fits within your budget. Would you like to try different dates or have me assist with other aspects of trip planning?"
 
-        **If SOME flights found:** Continue with destination selection using available flight data.
+        **If SOME flights found:** Continue with trip planning using available flight data.
 
-        ==== STEP 3: SELECT BEST DESTINATION (Only if flights found) ====
-        Choose the destination with:
-        - Best total flight cost
-        - Good arrival time coordination (within 3 hours)
-        - Matches group interests
-
-        ==== STEP 4: SEARCH HOTELS (Only if destination selected) ====
-        For the selected destination, use hotel_search tool:
+        ==== STEP 3: SEARCH HOTELS ====
+        For the destination, use hotel_search tool:
         {{
-            "destinations": ["XXX"],  // Use the 3-letter city code
+            "destinations": ["XXX"],  // Use the 3-letter city code for {top_destinations[0] if top_destinations else 'Barcelona'}
             "check_in": "{departure_date}",
             "check_out": "{return_date}",
             "group_accommodation_style": "{group_accommodation_style}",
             "accommodation_details": {json.dumps(accommodation_details)}
         }}
 
-        ==== STEP 5: CREATE ITINERARY (Only if hotel found) ====
-        Use itinerary_creator tool:
+        ==== STEP 4: PLAN ACTIVITIES (MANDATORY) ====
+        **CRITICAL: You MUST call the plan_activities tool to generate the actual activity itinerary. Do NOT create placeholder text.**
+        
+        Call the plan_activities tool with exactly this JSON:
         {{
-            "destinations": ["XXX"],
+            "destination": "{activity_destination}",
             "interests": {json.dumps(interests)},
-            "group_size": {group_size},
             "trip_duration_days": {trip_duration},
             "travel_style": "{travel_style}",
             "trip_pace": "{trip_pace}",
             "budget_per_person": {(budget['budget_min'] + budget['budget_max']) // 2}
         }}
 
-        Check if activities fit within the remaining budget after flights and hotels.
+        **REQUIRED:** The tool will return a complete day-by-day itinerary with real activities, costs, and venue details from Google Places API.
+        **YOU MUST INCLUDE THE COMPLETE TOOL OUTPUT IN YOUR RESPONSE - DO NOT SUMMARIZE OR CREATE PLACEHOLDER TEXT.**
 
-        ==== STEP 6: PRESENT COMPLETE PLAN (Only if all data available) ====
+        ==== STEP 5: PRESENT COMPLETE PLAN (Only if all data available) ====
 
-        **SELECTED DESTINATION: [City]**
-        Reasoning: [Why this destination won]
+        **DESTINATION: {top_destinations[0] if top_destinations else 'Barcelona'}**
 
         **FLIGHT PLAN**
         For each departure city, provide EXACT flight details in this format:
@@ -205,23 +204,30 @@ class TravelAgent:
         Total Hotel Cost: $[TOTAL_AMOUNT]
 
         **ACTIVITY ITINERARY**
-        For each day, list activities with EXACT names and booking details:
+        [PASTE THE COMPLETE OUTPUT FROM THE plan_activities TOOL HERE - INCLUDING ALL DAYS, ACTIVITIES, COSTS, AND VENUE DETAILS]
         
-        Day 1 - [Date]:
-        Activity: [EXACT name as on booking platform]
-        Description: [Brief description]
-        Duration: [X] hours
-        Price: $[AMOUNT] per person
-        Booking Platform: [Viator/GetYourGuide/TripAdvisor/etc]
+        The itinerary will automatically include:
+        - Day-by-day breakdown with scheduled times
+        - Real venue names from Google Places API
+        - Accurate addresses and contact information
+        - Star ratings and user review counts
+        - Estimated costs per person per activity
+        - Activity types (cultural, dining, outdoor, etc.)
+        - Duration estimates for each activity
 
         **FINAL COST BREAKDOWN**
         For each passenger email:
         [email@example.com]:
         - Flight from [AIRPORT]: $[amount]
         - Hotel ([room type]): $[amount] 
-        - Activities: $[amount]
-        - Food: $[amount]
+        - Activities (from Google Places): $[amount]
+        - Estimated meals: $[amount]
         - TOTAL: $[amount] ✓ Within budget
+        
+        **ACTIVITY COST SUMMARY**
+        - Total activity cost per person: $[amount from plan_activities tool]
+        - Average per day: $[amount/number of days]
+        - Source: Google Places API (real venues with verified ratings)
 
         **CRITICAL REMINDERS:**
         - ALWAYS check flight search status before proceeding

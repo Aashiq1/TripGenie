@@ -17,9 +17,11 @@ import {
   AlertCircle,
   User,
   Star,
-  Edit3
+  Edit3,
+  Search
 } from 'lucide-react'
 import { useAuthStore } from '../stores/authStore'
+import { ActivitySearch } from '../components/ActivitySearch'
 
 interface TripMember {
   id: string
@@ -137,13 +139,13 @@ export function TripDetails() {
   const navigate = useNavigate()
   const [trip, setTrip] = useState<TripDetails | null>(null)
   const [isLoading, setIsLoading] = useState(true)
-  const [activeTab, setActiveTab] = useState<'overview' | 'itinerary' | 'members'>('overview')
+  const [activeTab, setActiveTab] = useState<'overview' | 'itinerary' | 'members' | 'activities'>('overview')
   const [error, setError] = useState<string | null>(null)
   const [isPlanning, setIsPlanning] = useState(false)
   const [planError, setPlanError] = useState<string | null>(null)
   const [planSuccess, setPlanSuccess] = useState(false)
   const [isEditingDestinations, setIsEditingDestinations] = useState(false)
-  const [editDestinations, setEditDestinations] = useState<string[]>(['', '', ''])
+  const [editDestination, setEditDestination] = useState<string>('')
   const [isSavingDestinations, setIsSavingDestinations] = useState(false)
   const [tripPlan, setTripPlan] = useState<any>(null)
 
@@ -165,7 +167,7 @@ export function TripDetails() {
           // Use creator data (which has trip_group data merged) or fallback
           const sourceData = Object.keys(creator).length > 0 ? creator : fallbackData
           
-          const destinations = sourceData.destinations || []
+          const destination = sourceData.destination || 'Unknown'
           const budget = sourceData.budget || 1000
           
           // Store trip plan for separate display
@@ -173,8 +175,8 @@ export function TripDetails() {
 
           const transformedTrip: TripDetails = {
             groupCode: tripDetails.groupCode,
-            tripName: sourceData.trip_name || `Trip to ${destinations.length > 0 ? destinations.join(', ') : 'Unknown'}`,
-            destination: destinations.length > 0 ? destinations.join(', ') : 'Unknown',
+            tripName: sourceData.trip_name || `Trip to ${destination}`,
+            destination: destination,
             departureDate: sourceData.departure_date || '',
             returnDate: sourceData.return_date || '',
             budget: budget.toString(),
@@ -320,12 +322,7 @@ export function TripDetails() {
 
   const handleEditDestinations = () => {
     if (trip) {
-      const currentDestinations = trip.destination.split(', ').filter(d => d.trim() !== '')
-      setEditDestinations([
-        currentDestinations[0] || '',
-        currentDestinations[1] || '',
-        currentDestinations[2] || ''
-      ])
+      setEditDestination(trip.destination || '')
       setIsEditingDestinations(true)
     }
   }
@@ -333,9 +330,8 @@ export function TripDetails() {
   const handleSaveDestinations = async () => {
     if (!groupCode || !trip) return
 
-    const validDestinations = editDestinations.filter(dest => dest.trim() !== '')
-    if (validDestinations.length === 0) {
-      setError('At least one destination is required')
+    if (!editDestination.trim()) {
+      setError('Destination is required')
       return
     }
 
@@ -343,10 +339,10 @@ export function TripDetails() {
     setError(null)
 
     try {
-      // Create trip data with updated destinations
+      // Create trip data with updated destination
       const tripData = {
         group_code: groupCode,
-        destinations: validDestinations,
+        destination: editDestination.trim(),
         creator_email: user?.email || '',
         created_at: trip.createdAt,
         trip_name: trip.tripName,
@@ -364,13 +360,13 @@ export function TripDetails() {
       // Update local state
       setTrip(prev => prev ? {
         ...prev,
-        destination: validDestinations.join(', ')
+        destination: editDestination.trim()
       } : null)
 
       setIsEditingDestinations(false)
     } catch (error: any) {
-      console.error('Failed to update destinations:', error)
-      setError('Failed to update destinations. Please try again.')
+      console.error('Failed to update destination:', error)
+      setError('Failed to update destination. Please try again.')
     } finally {
       setIsSavingDestinations(false)
     }
@@ -378,7 +374,7 @@ export function TripDetails() {
 
   const handleCancelEditDestinations = () => {
     setIsEditingDestinations(false)
-    setEditDestinations(['', '', ''])
+    setEditDestination('')
     setError(null)
   }
 
@@ -446,23 +442,14 @@ export function TripDetails() {
                     </div>
                   ) : isCreator && isEditingDestinations ? (
                     <div className="flex items-center space-x-2">
-                      <div className="flex flex-col space-y-1">
-                        {editDestinations.map((dest, index) => (
-                          <input
-                            key={index}
-                            type="text"
-                            value={dest}
-                            onChange={(e) => {
-                              const newDestinations = [...editDestinations]
-                              newDestinations[index] = e.target.value
-                              setEditDestinations(newDestinations)
-                            }}
-                            placeholder={index === 0 ? "Primary destination (required)" : `Optional destination ${index + 1}`}
-                            className="text-sm px-2 py-1 border border-gray-300 rounded focus:outline-none focus:ring-1 focus:ring-primary-500 focus:border-primary-500"
-                            style={{ minWidth: '200px' }}
-                          />
-                        ))}
-                      </div>
+                      <input
+                        type="text"
+                        value={editDestination}
+                        onChange={(e) => setEditDestination(e.target.value)}
+                        placeholder="Enter destination (e.g., Barcelona, Tokyo, Paris)"
+                        className="text-sm px-2 py-1 border border-gray-300 rounded focus:outline-none focus:ring-1 focus:ring-primary-500 focus:border-primary-500"
+                        style={{ minWidth: '200px' }}
+                      />
                       <div className="flex flex-col space-y-1">
                         <button
                           onClick={handleSaveDestinations}
@@ -614,6 +601,7 @@ export function TripDetails() {
               {[
                 { id: 'overview', name: 'Overview', icon: MapPin },
                 { id: 'itinerary', name: 'Itinerary', icon: Calendar },
+                { id: 'activities', name: 'Activities', icon: Search },
                 { id: 'members', name: 'Members', icon: Users }
               ].map((tab) => (
                 <button
@@ -883,6 +871,26 @@ export function TripDetails() {
                   </div>
                 </div>
               ))}
+            </div>
+          )}
+
+          {activeTab === 'activities' && (
+            <div className="space-y-6">
+              <div className="flex items-center justify-between">
+                <h3 className="text-lg font-semibold text-gray-900">Find Activities</h3>
+                <div className="text-sm text-gray-500">
+                  Powered by Google Places
+                </div>
+              </div>
+
+              <ActivitySearch 
+                destination={trip.destination} 
+                onActivitySelect={(activity) => {
+                  // TODO: Add activity to itinerary
+                  console.log('Selected activity:', activity)
+                  alert(`Activity "${activity.name}" selected! (Integration with itinerary coming soon)`)
+                }}
+              />
             </div>
           )}
 

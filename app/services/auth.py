@@ -222,9 +222,8 @@ def add_user_to_trip(user_id: str, group_code: str, role: str = "member", destin
         try:
             from app.services import storage
             trip_group = storage.get_trip_group(group_code)
-            if trip_group and trip_group.destinations:
-                # Join multiple destinations with commas or use the first one
-                destination = ", ".join(trip_group.destinations) if len(trip_group.destinations) > 1 else trip_group.destinations[0]
+            if trip_group and trip_group.destination:
+                destination = trip_group.destination
                 # departure_date is not stored in TripGroup model, leave as None for now
                 departure_date = None
         except:
@@ -293,9 +292,8 @@ def update_existing_user_trips_with_destinations():
                 if not trip.get("destination"):
                     try:
                         trip_group = storage.get_trip_group(trip["groupCode"])
-                        if trip_group and trip_group.destinations:
-                            destination = ", ".join(trip_group.destinations) if len(trip_group.destinations) > 1 else trip_group.destinations[0]
-                            trip["destination"] = destination
+                        if trip_group and trip_group.destination:
+                            trip["destination"] = trip_group.destination
                             updated = True
                     except Exception as e:
                         print(f"Failed to update destination for trip {trip['groupCode']}: {e}")

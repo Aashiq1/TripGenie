@@ -41,7 +41,7 @@ async def preview_trip_details(
                 "name": trip_group.trip_name or "Trip Creator",
                 "email": trip_group.creator_email,
                 "role": "creator",
-                "destinations": trip_group.destinations,  # Real destinations
+                "destination": trip_group.destination,  # Real destination
                 "departure_date": trip_group.departure_date,  # Real departure date
                 "return_date": trip_group.return_date,  # Real return date
                 "budget": trip_group.budget,  # Real budget
@@ -51,7 +51,7 @@ async def preview_trip_details(
             "tripPlan": None,
             "memberCount": 1,
             "status": "planning",
-            "destinations": trip_group.destinations  # Add destinations at root level too
+            "destination": trip_group.destination  # Add destination at root level too
         }
     
     # Get trip plan if it exists
@@ -74,7 +74,7 @@ async def preview_trip_details(
                 "budget": trip_group.budget,
                 "accommodation_preference": trip_group.accommodation or user_dict.get("accommodation_preference", "standard"),
                 "description": trip_group.description,
-                "destinations": trip_group.destinations
+                "destination": trip_group.destination
             })
         enhanced_group_data.append(user_dict)
     
@@ -124,7 +124,7 @@ async def get_trip_details(
                 "name": trip_group.trip_name or "Trip Creator",
                 "email": trip_group.creator_email,
                 "role": "creator",
-                "destinations": trip_group.destinations,  # Real destinations
+                "destination": trip_group.destination,  # Real destination
                 "departure_date": trip_group.departure_date,  # Real departure date
                 "return_date": trip_group.return_date,  # Real return date
                 "budget": trip_group.budget,  # Real budget
@@ -156,7 +156,7 @@ async def get_trip_details(
                 "budget": trip_group.budget,
                 "accommodation_preference": trip_group.accommodation or user_dict.get("accommodation_preference", "standard"),
                 "description": trip_group.description,
-                "destinations": trip_group.destinations
+                "destination": trip_group.destination
             })
         enhanced_group_data.append(user_dict)
     
