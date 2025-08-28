@@ -130,8 +130,51 @@ class GooglePlacesService:
         # Filter and deduplicate
         filtered_activities = self._filter_activities(all_activities, travel_style)
         unique_activities = self._remove_duplicates(filtered_activities)
-        
-        return unique_activities[:20]  # Limit results
+
+        # Ensure category diversity: cap per category and rebalance if needed
+        categorized: Dict[str, List[Dict]] = {}
+        for act in unique_activities:
+            cat = act.get("activity_type", "sightseeing")
+            categorized.setdefault(cat, []).append(act)
+
+        # Desired order prioritizes non-dining first unless Food is top interest
+        priority_order = [
+            "cultural", "outdoor", "historical", "sightseeing", "shopping", "nightlife", "dining"
+        ]
+        # If Food is an explicit top interest, keep dining earlier
+        if interests and interests[0] == "Food & Cuisine":
+            priority_order = ["dining"] + [t for t in priority_order if t != "dining"]
+
+        # Cap per category to avoid food-only lists
+        cap_per_category = 4
+        diversified: List[Dict] = []
+        # Round-robin selection across categories
+        index = 0
+        while len(diversified) < 20:
+            progressed = False
+            for cat in priority_order:
+                bucket = categorized.get(cat, [])
+                if index < min(len(bucket), cap_per_category):
+                    diversified.append(bucket[index])
+                    progressed = True
+                    if len(diversified) >= 20:
+                        break
+            if not progressed:
+                break
+            index += 1
+
+        # If still underfilled, append remaining from any category up to 20
+        if len(diversified) < 20:
+            for cat in priority_order:
+                for act in categorized.get(cat, []):
+                    if act not in diversified:
+                        diversified.append(act)
+                        if len(diversified) >= 20:
+                            break
+                if len(diversified) >= 20:
+                    break
+
+        return diversified[:20]
     
     def _get_destination_coordinates(self, destination: str) -> Optional[Tuple[float, float]]:
         """Get latitude and longitude for a destination using Text Search."""
@@ -173,7 +216,7 @@ class GooglePlacesService:
                 "places.id,places.displayName,places.types,places.priceLevel,"
                 "places.rating,places.userRatingCount,places.location,"
                 "places.formattedAddress,places.websiteUri,places.nationalPhoneNumber,"
-                "places.currentOpeningHours,places.photos"
+                "places.currentOpeningHours,places.regularOpeningHours,places.photos"
             )
             
             payload = {
@@ -217,7 +260,7 @@ class GooglePlacesService:
                 "places.id,places.displayName,places.types,places.priceLevel,"
                 "places.rating,places.userRatingCount,places.location,"
                 "places.formattedAddress,places.websiteUri,places.nationalPhoneNumber,"
-                "places.currentOpeningHours,places.photos"
+                "places.currentOpeningHours,places.regularOpeningHours,places.photos"
             )
             
             payload = {
@@ -282,6 +325,12 @@ class GooglePlacesService:
                 "google_place_id": place_id,
                 "source": "google_places_new"
             }
+
+            # Parse regular opening hours into a normalized weekly schedule
+            regular_hours = place.get("regularOpeningHours") or {}
+            periods = regular_hours.get("periods", [])
+            if periods:
+                activity["opening_hours"] = self._normalize_opening_hours(periods)
             
             return activity
             
@@ -443,6 +492,34 @@ class GooglePlacesService:
                 return True
         
         return False
+
+    def _normalize_opening_hours(self, periods: List[Dict]) -> Dict[str, List[Dict[str, str]]]:
+        """Convert Google Places periods to weekday -> list of {open, close} in HH:MM format.
+        Handles overnight periods (e.g., 23:00-03:00) by splitting across days.
+        """
+        day_map = {0: "Mon", 1: "Tue", 2: "Wed", 3: "Thu", 4: "Fri", 5: "Sat", 6: "Sun"}
+        schedule: Dict[str, List[Dict[str, str]]] = {d: [] for d in day_map.values()}
+        for p in periods:
+            open_info = p.get("open", {})
+            close_info = p.get("close", {})
+            if not open_info or not close_info:
+                continue
+            o_day = open_info.get("day")
+            c_day = close_info.get("day")
+            o_time = str(open_info.get("hour", 0)).zfill(2) + ":" + str(open_info.get("minute", 0)).zfill(2)
+            c_time = str(close_info.get("hour", 0)).zfill(2) + ":" + str(close_info.get("minute", 0)).zfill(2)
+            if o_day is None or c_day is None:
+                continue
+            if o_day == c_day:
+                schedule[day_map.get(o_day, "Mon")].append({"open": o_time, "close": c_time})
+            else:
+                # Overnight: split into two segments
+                schedule[day_map.get(o_day, "Mon")].append({"open": o_time, "close": "23:59"})
+                schedule[day_map.get(c_day, "Mon")].append({"open": "00:00", "close": c_time})
+        # Sort intervals per day
+        for day in schedule:
+            schedule[day].sort(key=lambda x: x["open"])
+        return schedule
 
 
 def test_google_places_new():

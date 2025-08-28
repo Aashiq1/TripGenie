@@ -35,6 +35,7 @@ class CompleteBookingIntegration:
         try:
             agent_response = trip_plan.get('agent_response', '')
             preferences = trip_plan.get('preferences_used', {})
+            flights_override = trip_plan.get('flights_override')  # NEW: prefer passed-in Amadeus flights
             
             # Parse the agent response
             parsed_data = self.parser.parse_agent_response(agent_response, preferences)
@@ -50,7 +51,13 @@ class CompleteBookingIntegration:
                     destination = preferences.get('top_destinations', ['Unknown'])[0]
             
             # Process each component
-            flight_links = await self._extract_flight_links(parsed_data['flights'])
+            # Prefer explicit flights override when provided (Amadeus source-of-truth)
+            flights_input = parsed_data['flights']
+            if isinstance(flights_override, dict) and flights_override:
+                # Normalize to the same structure as parser output: { departure_city: flight_info }
+                flights_input = flights_override
+
+            flight_links = await self._extract_flight_links(flights_input)
             hotel_links = await self._extract_hotel_links(parsed_data['hotel'])
             activity_links = await self._extract_activity_links(
                 parsed_data['activities'], 
@@ -106,7 +113,10 @@ class CompleteBookingIntegration:
                         results.get('direct_booking_links', []),
                         results.get('search_links', [])
                     ),
-                    'total_links': results.get('total_links_found', 0)
+                    'total_links': results.get('total_links_found', 0),
+                    # Surface disclaimer and provenance
+                    'subject_to_availability': True,
+                    'source': flight_data.get('source', 'parsed')
                 }
                 
             except Exception as e:
@@ -155,21 +165,55 @@ class CompleteBookingIntegration:
             }
     
     async def _extract_activity_links(self, activities: List[Dict], destination: str) -> List[Dict]:
-        """Process activity links."""
-        processed_activities = []
-        
-        for activity in activities:
+        """Process activity links.
+        Accepts either a flat list of activity dicts or the parser's
+        {"daily_itinerary": {"day_X": {"activities": [...]}, ...}} structure.
+        """
+        processed_activities: List[Dict] = []
+
+        # Normalize input to a flat list of activity dicts with 'day'
+        flat_activities: List[Dict] = []
+        if isinstance(activities, dict):
+            daily = activities.get('daily_itinerary', {}) if activities else {}
+            for day_key, day_block in daily.items():
+                # day_number is preferred, otherwise parse from key like "day_2"
+                day_num = day_block.get('day_number') if isinstance(day_block, dict) else None
+                if day_num is None and isinstance(day_key, str) and day_key.lower().startswith('day_'):
+                    try:
+                        day_num = int(day_key.split('_', 1)[1])
+                    except Exception:
+                        day_num = 1
+                day_num = day_num or 1
+
+                day_activities = []
+                if isinstance(day_block, dict):
+                    day_activities = day_block.get('activities', []) or []
+                # Ensure we only add dict activities
+                for act in day_activities:
+                    if isinstance(act, dict):
+                        # Attach day if missing
+                        if 'day' not in act:
+                            act = {**act, 'day': day_num}
+                        flat_activities.append(act)
+        elif isinstance(activities, list):
+            # Already a flat list
+            for act in activities:
+                if isinstance(act, dict):
+                    flat_activities.append(act)
+
+        # Process each activity
+        for activity in flat_activities:
             try:
                 processed = {
                     'day': activity.get('day', 1),
                     'name': activity.get('name', 'Unknown Activity'),
                     'description': activity.get('description', ''),
-                    'duration_hours': activity.get('duration_hours', 2),
-                    'price_per_person': activity.get('price_per_person'),
+                    'duration_hours': activity.get('duration_hours') or activity.get('duration') or 2,
+                    'price_per_person': activity.get('price_per_person') or activity.get('estimated_cost'),
                     'booking_links': []
                 }
-                
-                # Check if activity already has booking info
+
+                # Existing direct booking info
                 if activity.get('booking_url'):
                     processed['booking_links'].append({
                         'platform': activity.get('booking_platform', 'Direct'),
@@ -177,25 +221,27 @@ class CompleteBookingIntegration:
                         'type': 'direct'
                     })
                 elif activity.get('name') and activity['name'] != 'Unknown Activity':
-                    # Try to find booking links
+                    # Try to find booking links via web providers (currently disabled → returns [])
                     additional_links = await self._find_activity_links(
-                        activity['name'], 
-                        destination
+                        activity['name'], destination
                     )
                     processed['booking_links'].extend(additional_links)
-                
+
                 processed['has_booking'] = len(processed['booking_links']) > 0
                 processed_activities.append(processed)
-                
+
             except Exception as e:
                 logger.error(f"Error processing activity: {e}")
+                # Avoid accessing .get on non-dict
+                fallback_name = activity['name'] if isinstance(activity, dict) and 'name' in activity else 'Unknown'
+                fallback_day = activity['day'] if isinstance(activity, dict) and 'day' in activity else 1
                 processed_activities.append({
-                    'day': activity.get('day', 1),
-                    'name': activity.get('name', 'Unknown'),
+                    'day': fallback_day,
+                    'name': fallback_name,
                     'error': str(e),
                     'booking_links': []
                 })
-        
+
         return processed_activities
     
     async def _find_activity_links(self, activity_name: str, destination: str) -> List[Dict]:

@@ -124,16 +124,18 @@ class BookingFinderService:
         
         all_results = []
         
-        for query in search_queries:
-            results = self.client.search(
-                query=query,
-                max_results=5,
-                search_depth="basic",
-                include_domains=self.HOTEL_BOOKING_DOMAINS
-            )
-            
-            if results and results.get("results"):
-                all_results.extend(results["results"])
+        # Only attempt external search if a client is configured
+        if self.client is not None:
+            for query in search_queries:
+                results = self.client.search(
+                    query=query,
+                    max_results=5,
+                    search_depth="basic",
+                    include_domains=self.HOTEL_BOOKING_DOMAINS
+                )
+                
+                if results and results.get("results"):
+                    all_results.extend(results["results"])
         
         # Parse results
         booking_links = self._parse_hotel_results(all_results, hotel_data)

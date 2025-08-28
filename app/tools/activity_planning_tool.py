@@ -6,6 +6,8 @@ Distributes activities across trip days intelligently.
 
 import json
 from typing import Dict, List, Any
+from datetime import datetime, timedelta, date
+from app.services.weather_service import WeatherService
 from app.services.activity_providers import ActivityAggregator
 
 
@@ -25,6 +27,26 @@ class ActivityPlanningTool:
             "Uses Google Places API with future support for GetYourGuide and Viator."
         )
         self.activity_aggregator = ActivityAggregator()
+        self.weather_service = WeatherService()
+        # Soft day-of-week weighting to bias categories by weekday (can be city-tuned later)
+        self.category_weekday_weights = {
+            "nightlife": {"Mon": 0.2, "Tue": 0.3, "Wed": 0.4, "Thu": 0.7, "Fri": 1.0, "Sat": 1.0, "Sun": 0.5},
+            "dining":    {"Mon": 0.7, "Tue": 0.7, "Wed": 0.8, "Thu": 0.8, "Fri": 0.9, "Sat": 0.9, "Sun": 0.8},
+            "cultural":  {"Mon": 0.2, "Tue": 0.9, "Wed": 0.9, "Thu": 0.9, "Fri": 0.8, "Sat": 0.8, "Sun": 0.8},
+            "outdoor":   {"Mon": 0.8, "Tue": 0.8, "Wed": 0.8, "Thu": 0.8, "Fri": 0.8, "Sat": 0.9, "Sun": 0.9},
+            "shopping":  {"Mon": 0.7, "Tue": 0.7, "Wed": 0.7, "Thu": 0.7, "Fri": 0.8, "Sat": 0.9, "Sun": 0.9},
+            "historical":{"Mon": 0.6, "Tue": 0.8, "Wed": 0.9, "Thu": 0.9, "Fri": 0.8, "Sat": 0.8, "Sun": 0.8},
+            "sightseeing": {"Mon": 0.7, "Tue": 0.8, "Wed": 0.9, "Thu": 0.9, "Fri": 0.8, "Sat": 0.8, "Sun": 0.8},
+        }
+
+    def _weekday_str(self, start_date: date | None, day_index: int) -> str:
+        if not start_date:
+            return "Fri"  # neutral-ish default
+        return (start_date + timedelta(days=day_index - 1)).strftime("%a")
+
+    def _category_weight(self, category: str, weekday: str) -> float:
+        table = self.category_weekday_weights.get(category, {})
+        return table.get(weekday, 0.8)
     
     def _call(self, input_str: str) -> str:
         """
@@ -63,9 +85,34 @@ class ActivityPlanningTool:
             if not activities:
                 return f"Error: No activities found for {destination}. Try different interests or destination."
             
-            # Plan daily itinerary
+            # Fetch simple weather (daily) for destination
+            destination_coords = None
+            try:
+                # Reuse aggregator's Google provider coordinates quickly
+                # Safe fallback: if first activity has location, approximate lat/lng
+                for act in activities:
+                    loc = act.get("location", {})
+                    if loc.get("lat") and loc.get("lng"):
+                        destination_coords = (loc["lat"], loc["lng"])
+                        break
+            except Exception:
+                destination_coords = None
+
+            weather_by_date: Dict[str, Dict[str, float]] = {}
+            if destination_coords:
+                try:
+                    start_date = datetime.strptime(str(input_data.get("departure_date", datetime.utcnow().date())), "%Y-%m-%d").date()
+                except Exception:
+                    start_date = datetime.utcnow().date()
+                end_date = start_date + timedelta(days=trip_duration - 1)
+                weather_by_date = self.weather_service.get_daily_forecast(
+                    destination_coords[0], destination_coords[1], start_date, end_date
+                )
+
+            # Plan daily itinerary (weather- and hours-aware)
             daily_itinerary = self._distribute_activities_across_days(
-                activities, trip_duration, budget_per_person, trip_pace, interests
+                activities, trip_duration, budget_per_person, trip_pace, interests,
+                start_date if destination_coords else None, weather_by_date
             )
             
             # Format response
@@ -76,7 +123,7 @@ class ActivityPlanningTool:
         except Exception as e:
             return f"Error planning activities: {str(e)}"
     
-    def _distribute_activities_across_days(self, activities: List[Dict], trip_duration: int, budget_per_person: int, trip_pace: str, interests: List[str]) -> Dict[int, List[Dict]]:
+    def _distribute_activities_across_days(self, activities: List[Dict], trip_duration: int, budget_per_person: int, trip_pace: str, interests: List[str], start_date: date | None = None, weather_by_date: Dict[str, Dict[str, float]] | None = None) -> Dict[int, List[Dict]]:
         """
         Intelligently distribute activities across trip days based on group preferences.
         
@@ -165,6 +212,17 @@ class ActivityPlanningTool:
             # Remove duplicates while preserving order
             seen = set()
             preferred_types = [x for x in preferred_types if not (x in seen or seen.add(x))]
+
+            # Apply soft weekday matrix weighting to re-order categories for this day
+            weekday = self._weekday_str(start_date, day)
+            # Interest priority score (earlier in list → higher)
+            interest_priority = {t: (len(priority_activity_types) - i) for i, t in enumerate(priority_activity_types)}
+            type_scores = {}
+            for t in preferred_types:
+                w = self._category_weight(t, weekday)
+                base = interest_priority.get(t, 0)
+                type_scores[t] = (base + 1) * w
+            preferred_types.sort(key=lambda t: type_scores.get(t, 0), reverse=True)
             
             activities_added = 0
             max_activities_per_day = config["max_activities"]
@@ -180,15 +238,27 @@ class ActivityPlanningTool:
                     if activities_added >= max_activities_per_day:
                         break
                     
+                    # Weather-based downweighting for outdoor
+                    if start_date and weather_by_date and activity_type == "outdoor":
+                        date_key = (start_date + timedelta(days=day - 1)).isoformat()
+                        w = weather_by_date.get(date_key, {})
+                        if w:
+                            max_c = w.get("max_temp_c")
+                            precip = w.get("precip_prob")
+                            if max_c is not None and max_c >= 32:
+                                # If extreme heat, prefer early/late and lightly penalize selection
+                                pass
+                            if precip is not None and precip >= 60:
+                                # Skip outdoor on heavy rain day
+                                continue
+
                     # Check if activity fits budget
+                    # Estimate simple per-person cost based on price level
                     activity_cost = self._estimate_activity_cost(activity)
                     
                     if activity_cost <= day_budget_remaining:
-                        # Add time slots for the day
-                        time_slot = self._assign_time_slot(activities_added, activity, config["buffer_time"])
                         activity_with_time = {
                             **activity,
-                            "scheduled_time": time_slot,
                             "estimated_cost": activity_cost,
                             "day": day
                         }
@@ -208,12 +278,9 @@ class ActivityPlanningTool:
                 
                 needed_activities = min_activities_per_day - activities_added
                 for activity in all_remaining[:needed_activities]:
-                    time_slot = self._assign_time_slot(len(daily_activities), activity, config["buffer_time"])
                     activity_cost = self._estimate_activity_cost(activity)
-                    
                     activity_with_time = {
                         **activity,
-                        "scheduled_time": time_slot,
                         "estimated_cost": activity_cost,
                         "day": day
                     }
@@ -288,7 +355,7 @@ class ActivityPlanningTool:
                 day_cost += cost
                 total_estimated_cost += cost
                 
-                response += f"• {activity['scheduled_time']} - **{activity['name']}**\n"
+                response += f"• **{activity['name']}**\n"
                 response += f"  📍 {activity['location']['address']}\n"
                 response += f"  💰 ${cost:.0f} per person"
                 

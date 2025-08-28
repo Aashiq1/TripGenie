@@ -299,6 +299,20 @@ class AgentResponseParser:
         # Get destination if not city
         if 'city' not in hotel_data:
             hotel_data['city'] = self.extract_selected_destination(response, preferences)
+
+        # NEW: Correct total_cost if nights/rooms/price_per_night available
+        try:
+            nights = hotel_data.get('total_nights')
+            price_per_night = hotel_data.get('price_per_night')
+            rooms = 1
+            if 'rooms' in hotel_data and isinstance(hotel_data['rooms'], dict):
+                rooms = int(hotel_data['rooms'].get('singles', 0)) + int(hotel_data['rooms'].get('doubles', 0))
+                rooms = rooms or 1
+            if nights and price_per_night:
+                computed_total = int(price_per_night) * int(nights) * int(rooms)
+                hotel_data['total_cost'] = computed_total
+        except Exception:
+            pass
         
         return hotel_data
     

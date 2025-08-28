@@ -170,6 +170,7 @@ class TravelAgent:
             "trip_duration_days": {trip_duration},
             "travel_style": "{travel_style}",
             "trip_pace": "{trip_pace}",
+            "departure_date": "{departure_date}",
             "budget_per_person": {(budget['budget_min'] + budget['budget_max']) // 2}
         }}
 
