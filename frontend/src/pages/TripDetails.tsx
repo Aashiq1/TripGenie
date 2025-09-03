@@ -99,7 +99,31 @@ function transformItineraryData(tripPlan: any): ItineraryItem[] {
       }
     }
     
-    if (!dailyItinerary) return []
+    if (!dailyItinerary) {
+      // Fallback: synthesize empty days from optimized dates if available
+      const start = parsedData?.date_range?.start_date || parsedData?.cost_optimization?.departure_date
+      const end = parsedData?.date_range?.end_date || parsedData?.cost_optimization?.return_date
+      if (start && end) {
+        const startDate = new Date(start)
+        const endDate = new Date(end)
+        if (!isNaN(startDate.getTime()) && !isNaN(endDate.getTime())) {
+          const days = Math.max(0, Math.ceil((endDate.getTime() - startDate.getTime()) / (1000*60*60*24)))
+          const items: ItineraryItem[] = []
+          for (let i = 0; i < days; i++) {
+            const d = new Date(startDate)
+            d.setDate(d.getDate() + i)
+            items.push({
+              id: `day_${i+1}`,
+              day: i+1,
+              date: d.toISOString(),
+              activities: []
+            })
+          }
+          return items
+        }
+      }
+      return []
+    }
     
     // Transform to frontend format
     const itineraryItems: ItineraryItem[] = []
@@ -148,6 +172,36 @@ export function TripDetails() {
   const [editDestination, setEditDestination] = useState<string>('')
   const [isSavingDestinations, setIsSavingDestinations] = useState(false)
   const [tripPlan, setTripPlan] = useState<any>(null)
+
+  // Extract hotel recommendations (recommended + alternates) from tripPlan if present
+  const getHotelRecommendations = (plan: any) => {
+    if (!plan) return null
+    if (plan.hotel_recommendations) {
+      const hr = plan.hotel_recommendations
+      return { recommended: hr.recommended || null, alternates: hr.alternates || [], all: hr.all || [] }
+    }
+    // Direct top-level
+    if (plan.recommended || plan.alternates) {
+      return {
+        recommended: plan.recommended || null,
+        alternates: plan.alternates || []
+      }
+    }
+    // Search nested (e.g., under destination keys like MAD/BCN or tool-specific blocks)
+    try {
+      const keys = Object.keys(plan)
+      for (const k of keys) {
+        const v = plan[k]
+        if (v && typeof v === 'object' && (v.recommended || v.alternates)) {
+          return {
+            recommended: v.recommended || null,
+            alternates: v.alternates || []
+          }
+        }
+      }
+    } catch {}
+    return null
+  }
 
   useEffect(() => {
     const fetchTripDetails = async () => {
@@ -242,6 +296,22 @@ export function TripDetails() {
       month: 'long',
       day: 'numeric'
     })
+  }
+
+  // Format a day date with fallback to departureDate + (day-1)
+  const formatDayDate = (dayItem: ItineraryItem) => {
+    const primary = formatDate(dayItem.date)
+    if (primary !== 'Invalid date') return primary
+    // Fallback using trip.departureDate
+    if (trip?.departureDate) {
+      const base = new Date(trip.departureDate)
+      if (!isNaN(base.getTime())) {
+        const d = new Date(base)
+        d.setDate(d.getDate() + Math.max(0, (dayItem.day || 1) - 1))
+        return d.toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })
+      }
+    }
+    return 'TBD'
   }
 
   const getStatusColor = (status: string) => {
@@ -680,6 +750,65 @@ export function TripDetails() {
                   )}
                 </div>
 
+                {/* Accommodation Recommendations */}
+                {tripPlan && (() => {
+                  const recs = getHotelRecommendations(tripPlan)
+                  if (!recs || (!recs.recommended && (!recs.alternates || recs.alternates.length === 0))) return null
+                  return (
+                    <div className="card">
+                      <h3 className="text-lg font-semibold text-gray-900 mb-4">Recommended Hotel</h3>
+                      {recs.recommended && (
+                        <div className="p-4 border border-green-200 rounded-lg bg-green-50 mb-4">
+                          <div className="flex items-center justify-between">
+                            <div>
+                              <div className="font-medium text-gray-900">{recs.recommended.hotel_name || 'Recommended'}</div>
+                              <div className="text-sm text-gray-600">
+                                {recs.recommended.hotel_rating ? `${recs.recommended.hotel_rating}★` : 'Unrated'}
+                                {recs.recommended.distance_km_to_anchor != null && (
+                                  <span> • {recs.recommended.distance_km_to_anchor.toFixed ? recs.recommended.distance_km_to_anchor.toFixed(1) : recs.recommended.distance_km_to_anchor} km to center</span>
+                                )}
+                              </div>
+                            </div>
+                            <div className="text-right">
+                              <div className="text-sm text-gray-600">Total (group)</div>
+                              <div className="font-semibold text-gray-900">${recs.recommended.total_trip_cost}</div>
+                            </div>
+                          </div>
+                          {recs.recommended.address && (
+                            <div className="mt-2 text-sm text-gray-600">{recs.recommended.address}</div>
+                          )}
+                        </div>
+                      )}
+                      {recs.alternates && recs.alternates.length > 0 && (
+                        <div>
+                          <h4 className="text-sm font-medium text-gray-900 mb-2">Alternatives</h4>
+                          <div className="space-y-2">
+                            {recs.alternates.map((alt: any, idx: number) => (
+                              <div key={idx} className="p-3 border border-gray-200 rounded-lg">
+                                <div className="flex items-center justify-between">
+                                  <div>
+                                    <div className="font-medium text-gray-900">{alt.hotel_name || 'Alternate'}</div>
+                                    <div className="text-xs text-gray-600">
+                                      {alt.hotel_rating ? `${alt.hotel_rating}★` : 'Unrated'}
+                                      {alt.distance_km_to_anchor != null && (
+                                        <span> • {alt.distance_km_to_anchor.toFixed ? alt.distance_km_to_anchor.toFixed(1) : alt.distance_km_to_anchor} km</span>
+                                      )}
+                                    </div>
+                                  </div>
+                                  <div className="text-right">
+                                    <div className="text-xs text-gray-600">Total (group)</div>
+                                    <div className="font-semibold text-gray-900">${alt.total_trip_cost}</div>
+                                  </div>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  )
+                })()}
+
                 {/* Quick Stats */}
                 <div className="grid grid-cols-3 gap-4">
                   <div className="card text-center">
@@ -774,6 +903,62 @@ export function TripDetails() {
                 )}
               </div>
 
+              {/* Recommended hotel summary */}
+              {tripPlan && (() => {
+                const recs = getHotelRecommendations(tripPlan)
+                if (!recs || (!recs.recommended && (!recs.alternates || recs.alternates.length === 0))) return null
+                return (
+                  <div className="card">
+                    <h3 className="text-lg font-semibold text-gray-900 mb-3">Accommodation Picks</h3>
+                    {recs.recommended && (
+                      <div className="p-3 border border-green-200 rounded-lg bg-green-50 mb-3">
+                        <div className="flex items-center justify-between">
+                          <div>
+                            <div className="font-medium text-gray-900">{recs.recommended.hotel_name || 'Recommended'}</div>
+                            <div className="text-xs text-gray-600">
+                              {recs.recommended.hotel_rating ? `${recs.recommended.hotel_rating}★` : 'Unrated'}
+                              {recs.recommended.distance_km_to_anchor != null && (
+                                <span> • {recs.recommended.distance_km_to_anchor.toFixed ? recs.recommended.distance_km_to_anchor.toFixed(1) : recs.recommended.distance_km_to_anchor} km</span>
+                              )}
+                            </div>
+                          </div>
+                          <div className="text-right">
+                            <div className="text-xs text-gray-600">Total (group)</div>
+                            <div className="font-semibold text-gray-900">${recs.recommended.total_trip_cost}</div>
+                          </div>
+                        </div>
+                      </div>
+                    )}
+                    {recs.alternates && recs.alternates.length > 0 && (
+                      <div>
+                        <h4 className="text-sm font-medium text-gray-900 mb-2">Alternatives</h4>
+                        <div className="space-y-2">
+                          {recs.alternates.map((alt: any, idx: number) => (
+                            <div key={idx} className="p-3 border border-gray-200 rounded-lg">
+                              <div className="flex items-center justify-between">
+                                <div>
+                                  <div className="font-medium text-gray-900">{alt.hotel_name || 'Alternate'}</div>
+                                  <div className="text-xs text-gray-600">
+                                    {alt.hotel_rating ? `${alt.hotel_rating}★` : 'Unrated'}
+                                    {alt.distance_km_to_anchor != null && (
+                                      <span> • {alt.distance_km_to_anchor.toFixed ? alt.distance_km_to_anchor.toFixed(1) : alt.distance_km_to_anchor} km</span>
+                                    )}
+                                  </div>
+                                </div>
+                                <div className="text-right">
+                                  <div className="text-xs text-gray-600">Total (group)</div>
+                                  <div className="font-semibold text-gray-900">${alt.total_trip_cost}</div>
+                                </div>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )
+              })()}
+
               {/* Generated Trip Plan */}
               {tripPlan && (
                 <div className="card">
@@ -827,11 +1012,16 @@ export function TripDetails() {
                 <div key={day.id} className="card">
                   <div className="flex items-center justify-between mb-4">
                     <h4 className="text-lg font-semibold text-gray-900">
-                      Day {day.day} - {formatDate(day.date)}
+                      Day {day.day} - {formatDayDate(day)}
                     </h4>
                   </div>
 
                   <div className="space-y-3">
+                    {day.activities.length === 0 && (
+                      <div className="p-4 bg-yellow-50 border border-yellow-200 rounded-lg text-yellow-800 text-sm">
+                        No scheduled activities for this day.
+                      </div>
+                    )}
                     {day.activities.map((activity, index) => (
                       <div key={index} className="flex items-start space-x-4 p-4 bg-gray-50 rounded-lg">
                         <div className="flex-shrink-0">

@@ -85,6 +85,30 @@ class GooglePlacesService:
             "PRICE_LEVEL_EXPENSIVE": "$$$",
             "PRICE_LEVEL_VERY_EXPENSIVE": "$$$$"
         }
+        # Provide a simple USD estimate for each price level for downstream budgeting
+        self.PRICE_LEVEL_USD_ESTIMATES = {
+            "Free": 0,
+            "$": 15,
+            "$$": 35,
+            "$$$": 75,
+            "$$$$": 150
+        }
+        # Category baseline estimates (used when Google priceLevel is missing/unknown)
+        self.CATEGORY_PRICE_BASE_USD = {
+            "dining": 20,
+            "nightlife": 35,
+            "cultural": 15,
+            "historical": 10,
+            "outdoor": 0,
+            "shopping": 0,
+            "sightseeing": 0
+        }
+        # Category-specific overrides for price levels (more realistic for certain categories)
+        # If a category has an override for a price symbol, it will be used in place of the generic mapping above
+        self.CATEGORY_PRICE_LEVEL_OVERRIDES = {
+            "nightlife": {"$": 20, "$$": 30, "$$$": 40, "$$$$": 60},
+            "dining": {"$": 12, "$$": 25, "$$$": 45, "$$$$": 80}
+        }
     
     def search_activities_by_interest(self, destination: str, interests: List[str], 
                                     travel_style: str = "balanced") -> List[Dict]:
@@ -294,16 +318,37 @@ class GooglePlacesService:
             if not name or len(name) < 3:
                 return None
             
-            # Determine if it's free or paid
-            price_level = place.get("priceLevel", "PRICE_LEVEL_FREE")
-            is_free = price_level == "PRICE_LEVEL_FREE"
+            # Determine activity type first (used for pricing heuristics)
+            activity_type = self._determine_activity_type(place, interest)
+
+            # Determine price level; do NOT default missing to FREE
+            price_level_raw = place.get("priceLevel")  # can be None
+            human_price_level = self.PRICE_LEVELS.get(price_level_raw, None) if price_level_raw else None
+
+            # Determine if it's free: only explicit FREE and not dining/nightlife/shopping
+            is_free = bool(human_price_level == "Free" and activity_type not in ["dining", "nightlife", "shopping"])
+
+            # Best-effort numeric estimate for budgeting/UX
+            amount_usd_estimate = None
+            if is_free:
+                amount_usd_estimate = 0
+            else:
+                # Category-specific override takes precedence if we have a price symbol
+                if human_price_level and activity_type in self.CATEGORY_PRICE_LEVEL_OVERRIDES:
+                    amount_usd_estimate = self.CATEGORY_PRICE_LEVEL_OVERRIDES[activity_type].get(human_price_level)
+                # Fall back to generic mapping if still None
+                if amount_usd_estimate is None and human_price_level:
+                    amount_usd_estimate = self.PRICE_LEVEL_USD_ESTIMATES.get(human_price_level)
+                # If still None (no price level), use category baseline
+                if amount_usd_estimate is None:
+                    amount_usd_estimate = self.CATEGORY_PRICE_BASE_USD.get(activity_type, 25)
             
             # Build activity
             activity = {
                 "name": name,
                 "description": self._create_description(place, interest),
                 "interest": interest,
-                "activity_type": self._determine_activity_type(place, interest),
+                "activity_type": activity_type,
                 "location": {
                     "address": place.get("formattedAddress", ""),
                     "lat": place.get("location", {}).get("latitude"),
@@ -312,9 +357,11 @@ class GooglePlacesService:
                 "is_free": is_free,
                 "is_bookable": not is_free,  # Free places usually don't need booking
                 "price_info": {
-                    "price_level": self.PRICE_LEVELS.get(price_level, "Unknown"),
-                    "amount_usd": 0 if is_free else None
+                    "price_level": human_price_level or "Unknown",
+                    "amount_usd": amount_usd_estimate
                 },
+                # Surface a flat per-person price estimate for easier downstream consumption
+                "price_per_person": float(amount_usd_estimate) if isinstance(amount_usd_estimate, (int, float)) else None,
                 "rating": place.get("rating"),
                 "user_ratings_total": place.get("userRatingCount", 0),
                 "photos": self._get_photo_urls(place.get("photos", [])[:2]),

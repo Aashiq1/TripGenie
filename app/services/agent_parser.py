@@ -509,10 +509,15 @@ class AgentResponseParser:
         if not activity['name'] or len(activity['name']) < 2:
             return None
         
-        # Extract price from original line
-        price_match = re.search(r'💰\s*(\d+)\s*per person|\$(\d+)(?:/person|/pp)?', original_line)
+        # Extract price from original line (support decimals and different formats)
+        # Examples: "💰 15 per person", "$25", "$25/pp", "$12.50 per person"
+        price_match = re.search(r'(?:💰\s*(\d+(?:\.\d+)?)\s*(?:per\s*person|/pp)?)|\$(\d+(?:\.\d+)?)(?:\s*(?:per\s*person|/pp))?', original_line, re.IGNORECASE)
         if price_match:
-            activity['estimated_cost'] = int(price_match.group(1) or price_match.group(2))
+            value = price_match.group(1) or price_match.group(2)
+            try:
+                activity['estimated_cost'] = float(value)
+            except Exception:
+                pass
         
         # Extract duration from original line
         duration_match = re.search(r'⏱️\s*(\d+(?:\.\d+)?)\s*h', original_line)

@@ -300,19 +300,29 @@ class ActivityPlanningTool:
         """Estimate activity cost based on price level."""
         if activity.get("is_free", False):
             return 0.0
-        
+
+        # Prefer numeric amount if provided
+        amount = activity.get("price_per_person")
+        if amount is None:
+            amount = activity.get("price_info", {}).get("amount_usd")
+        if isinstance(amount, (int, float)):
+            try:
+                return float(amount)
+            except Exception:
+                pass
+
         price_level = activity.get("price_info", {}).get("price_level", "$")
-        
-        # Cost mapping based on price level
+
+        # Cost mapping based on price level (fallback)
         cost_mapping = {
             "Free": 0,
-            "$": 15,      # Budget activities
-            "$$": 35,     # Moderate activities  
-            "$$$": 75,    # Expensive activities
-            "$$$$": 150   # Very expensive activities
+            "$": 15,
+            "$$": 35,
+            "$$$": 75,
+            "$$$$": 150
         }
-        
-        return cost_mapping.get(price_level, 25)  # Default to moderate cost
+
+        return float(cost_mapping.get(price_level, 25))
     
     def _assign_time_slot(self, activity_index: int, activity: Dict, buffer_time: float = 1.0) -> str:
         """Assign appropriate time slot based on activity type, index, and pace."""

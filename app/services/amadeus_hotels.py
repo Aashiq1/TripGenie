@@ -2,8 +2,9 @@
 
 from amadeus import Client, ResponseError
 import os
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Tuple
 from datetime import datetime
+import math
 
 # Load environment variables FIRST
 from dotenv import load_dotenv
@@ -20,7 +21,9 @@ def get_hotel_offers(
     city_code: str,
     check_in_date: str, 
     check_out_date: str,
-    accommodation_preference: str = "standard"
+    accommodation_preference: str = "standard",
+    anchor_coords: Optional[Tuple[float, float]] = None,
+    airport_coords: Optional[Tuple[float, float]] = None
 ) -> List[Dict]:
     """
     Fetch hotel offers from Amadeus for a city.
@@ -50,18 +53,60 @@ def get_hotel_offers(
             "luxury": [4, 5]
         }
         
-        # Filter hotels by rating preference
+        # === Stage 1: Cheap ranking using by_city data (no offers calls) ===
         target_ratings = rating_map.get(accommodation_preference, [3, 4])
-        filtered_hotels = []
-        
-        for hotel in hotels_response.data[:20]:  # Check first 20 hotels
-            hotel_rating = int(hotel.get('rating', 0))
-            if hotel_rating in target_ratings or hotel_rating == 0:
-                filtered_hotels.append(hotel['hotelId'])
-        
-        if not filtered_hotels:
-            # If no hotels match criteria, use first 10
-            filtered_hotels = [h['hotelId'] for h in hotels_response.data[:10]]
+        candidates: List[Dict] = []
+        # Increase scan breadth a bit; we'll trim before offers fetch
+        for h in hotels_response.data[:50]:
+            try:
+                hid = h.get('hotelId')
+                if not hid:
+                    continue
+                hotel_rating = int(h.get('rating', 0) or 0)
+                # Respect rating preference band, allow unrated (0)
+                if hotel_rating not in target_ratings and hotel_rating != 0:
+                    continue
+                # Try multiple shapes for lat/lng depending on API payload
+                lat = h.get('latitude')
+                lng = h.get('longitude')
+                if lat is None or lng is None:
+                    geo = h.get('geoCode') or {}
+                    lat = geo.get('latitude')
+                    lng = geo.get('longitude')
+                # Compute distances if we can
+                dist_anchor = None
+                dist_airport = None
+                if anchor_coords and isinstance(lat, (int, float)) and isinstance(lng, (int, float)):
+                    dist_anchor = _haversine_km(anchor_coords[0], anchor_coords[1], float(lat), float(lng))
+                if airport_coords and isinstance(lat, (int, float)) and isinstance(lng, (int, float)):
+                    dist_airport = _haversine_km(airport_coords[0], airport_coords[1], float(lat), float(lng))
+                # Early airport exclusion (first pass) if distances known
+                if dist_airport is not None and dist_airport < 6.0:
+                    continue
+                candidates.append({
+                    'hotelId': hid,
+                    'rating': hotel_rating,
+                    'lat': lat,
+                    'lng': lng,
+                    'distance_anchor': dist_anchor,
+                    'distance_airport': dist_airport
+                })
+            except Exception:
+                continue
+
+        # If no candidates survived, fall back to first 10 raw IDs
+        if not candidates:
+            filtered_hotels = [h.get('hotelId') for h in hotels_response.data[:10] if h.get('hotelId')]
+        else:
+            # Sort by distance to anchor (if known), then by rating desc (higher first)
+            def _cand_sort_key(c: Dict):
+                d = c.get('distance_anchor')
+                dist_key = d if isinstance(d, (int, float)) else float('inf')
+                return (dist_key, -int(c.get('rating') or 0))
+            candidates.sort(key=_cand_sort_key)
+            # Trim to top-K before heavy offers calls
+            TOP_K = 12
+            filtered_hotels = [c['hotelId'] for c in candidates[:TOP_K]]
         
         # Step 2: Search for offers at these hotels - TRY INDIVIDUALLY
         # Calculate number of nights
@@ -71,7 +116,7 @@ def get_hotel_offers(
         
         hotels = []
         successful_searches = 0
-        max_hotels_to_try = min(15, len(filtered_hotels))  # Try up to 15 hotels
+        max_hotels_to_try = min(12, len(filtered_hotels))  # Try up to 12 ranked hotels
         
         for hotel_id in filtered_hotels[:max_hotels_to_try]:
             try:
@@ -126,7 +171,7 @@ def get_hotel_offers(
                             # Continue with next offer
                             continue
                 
-                    hotels.append({
+                    hotel_entry = {
                         'hotel_id': hotel_info['hotelId'],
                         'hotel_name': hotel_info['name'],
                         'hotel_rating': hotel_info.get('rating', 'Unrated'),
@@ -136,7 +181,23 @@ def get_hotel_offers(
                         'room_types_available': room_types_available,
                         'accommodation_type': accommodation_preference,
                         'num_nights': num_nights
-                    })
+                    }
+
+                    # Compute distance to anchor if provided
+                    lat = hotel_info.get('latitude')
+                    lng = hotel_info.get('longitude')
+                    if anchor_coords and isinstance(lat, (int, float)) and isinstance(lng, (int, float)):
+                        hotel_entry['distance_km_to_anchor'] = _haversine_km(anchor_coords[0], anchor_coords[1], lat, lng)
+                    else:
+                        hotel_entry['distance_km_to_anchor'] = None
+
+                    # Compute distance to airport if provided
+                    if airport_coords and isinstance(lat, (int, float)) and isinstance(lng, (int, float)):
+                        hotel_entry['distance_km_to_airport'] = _haversine_km(airport_coords[0], airport_coords[1], lat, lng)
+                    else:
+                        hotel_entry['distance_km_to_airport'] = None
+
+                    hotels.append(hotel_entry)
                     
                     successful_searches += 1
                     
@@ -160,6 +221,41 @@ def get_hotel_offers(
         else:
             print(f"Found {len(hotels)} hotels with availability in {city_code}")
             
+        # Step 3: Apply MVP location biasing if we have an anchor
+        if anchor_coords and hotels:
+            # Filter by radius bands (km)
+            bands = [5.0, 8.0, 12.0]
+            selected: List[Dict] = []
+            for radius in bands:
+                band_hotels = [h for h in hotels if (h.get('distance_km_to_anchor') is not None and h['distance_km_to_anchor'] <= radius)]
+                # Avoid airport-adjacent in early bands if airport_coords provided
+                if airport_coords:
+                    band_hotels = [h for h in band_hotels if (h.get('distance_km_to_airport') is None or h['distance_km_to_airport'] >= 6.0)]
+                if band_hotels:
+                    selected = band_hotels
+                    break
+            # If none matched bands, fall back to all
+            selected = selected or hotels
+
+            # Sort by distance, then by cheapest available room price, then by rating desc
+            def _cheapest_price(h: Dict) -> float:
+                prices = [v.get('total_price_per_night') or v.get('base_price_per_night', 0) for v in h.get('room_types_available', {}).values()]
+                return min(prices) if prices else float('inf')
+
+            def _rating_num(h: Dict) -> int:
+                try:
+                    return int(h.get('hotel_rating') or 0)
+                except Exception:
+                    return 0
+
+            selected.sort(key=lambda h: (
+                h.get('distance_km_to_anchor') if h.get('distance_km_to_anchor') is not None else float('inf'),
+                _cheapest_price(h),
+                -_rating_num(h)
+            ))
+
+            return selected
+
         return hotels
         
     except ResponseError as e:
@@ -380,3 +476,15 @@ def calculate_total_accommodation_cost(
         'individual_costs': individual_totals,
         'room_configuration': room_assignments['summary']
     }
+
+
+def _haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    """Great-circle distance between two points in km."""
+    R = 6371.0088
+    phi1 = math.radians(lat1)
+    phi2 = math.radians(lat2)
+    dphi = math.radians(lat2 - lat1)
+    dlambda = math.radians(lon2 - lon1)
+    a = math.sin(dphi/2)**2 + math.cos(phi1) * math.cos(phi2) * math.sin(dlambda/2)**2
+    c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+    return R * c

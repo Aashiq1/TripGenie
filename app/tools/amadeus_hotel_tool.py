@@ -8,6 +8,8 @@ from app.services.amadeus_hotels import (
     calculate_total_accommodation_cost,
     get_standard_room_types
 )
+from app.services.google_places_service import GooglePlacesService
+from app.services.amadeus_location_lookup import iata_to_city_name
 
 class HotelSearchTool:
     """
@@ -49,12 +51,25 @@ class HotelSearchTool:
             results = {}
             
             for destination in destinations:
-                # Search hotels
+                # Resolve city center anchor coordinates
+                anchor_coords = None
+                try:
+                    city_name = iata_to_city_name(destination)
+                    try:
+                        places = GooglePlacesService()
+                        anchor_coords = places._get_destination_coordinates(city_name)
+                    except Exception:
+                        anchor_coords = None
+                except Exception:
+                    anchor_coords = None
+
+                # Search hotels (with anchor if available)
                 hotels = get_hotel_offers(
                     city_code=destination,
                     check_in_date=check_in,
                     check_out_date=check_out,
-                    accommodation_preference=group_accommodation_style
+                    accommodation_preference=group_accommodation_style,
+                    anchor_coords=anchor_coords
                 )
                 
                 if not hotels:
@@ -68,6 +83,7 @@ class HotelSearchTool:
                 else:
                     # Process each hotel option
                     hotel_options = []
+                    hotel_pairs = []  # Keep (raw_hotel, option) to access distance/rating for scoring
                     
                     for hotel in hotels[:5]:  # Top 5 hotels
                         # Convert room types to standard format
@@ -99,7 +115,7 @@ class HotelSearchTool:
                             num_nights
                         )
                         
-                        hotel_options.append({
+                        option_payload = {
                             'hotel_name': hotel['hotel_name'],
                             'hotel_rating': hotel['hotel_rating'],
                             'address': hotel['address'],
@@ -118,10 +134,43 @@ class HotelSearchTool:
                                 for occupant_id, details in total_costs['individual_costs'].items()
                             ],
                             'nights': num_nights
-                        })
+                        }
+                        hotel_options.append(option_payload)
+                        hotel_pairs.append((hotel, option_payload))
                     
+                    # === Scoring to produce recommended + alternates ===
+                    def _parse_rating(value) -> int:
+                        try:
+                            return int(value) if value not in (None, 'Unrated') else 0
+                        except Exception:
+                            return 0
+
+                    group_size = max(len(accommodation_details), 1)
+                    scored = []
+                    for raw_hotel, opt in hotel_pairs:
+                        total_cost = float(opt.get('total_trip_cost', 0) or 0)
+                        nights_safe = max(num_nights, 1)
+                        price_pppn = total_cost / (group_size * nights_safe) if total_cost > 0 else float('inf')
+                        dist = raw_hotel.get('distance_km_to_anchor')
+                        distance_km = float(dist) if isinstance(dist, (int, float)) else 50.0
+                        rating_num = _parse_rating(raw_hotel.get('hotel_rating'))
+                        # Simple value score: lower is better
+                        w_price, w_dist, w_rating = 1.0, 0.5, 0.2
+                        score = w_price * price_pppn + w_dist * distance_km + w_rating * (5 - rating_num)
+                        scored.append({
+                            **opt,
+                            'distance_km_to_anchor': dist if isinstance(dist, (int, float)) else None,
+                            'score': round(score, 2)
+                        })
+
+                    scored.sort(key=lambda x: x['score'])
+                    recommended = scored[0] if scored else None
+                    alternates = scored[1:3] if len(scored) > 1 else []
+
                     results[destination] = {
                         'hotels': hotel_options,
+                        'recommended': recommended,
+                        'alternates': alternates,
                         'search_parameters': {
                             'check_in': check_in,
                             'check_out': check_out,

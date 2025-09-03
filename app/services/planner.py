@@ -8,6 +8,7 @@ from app.services.booking_integration import get_all_booking_links  # NEW IMPORT
 from app.services.amadeus_flights import get_flight_offers, get_cheapest_date_candidates_for_window  # NEW: Use Amadeus as source of truth for flights + calendar narrowing
 from app.services.amadeus_location_lookup import get_airport_code_with_fallback  # NEW IMPORT FOR DYNAMIC IATA LOOKUP
 from app.tools.amadeus_flight_tool import AmadeusFlightTool  # NEW IMPORT FOR COST CHECKING
+from app.tools.amadeus_hotel_tool import HotelSearchTool  # NEW: Hotel recommendations (recommended + alternates)
 from typing import List, Dict, Any
 import json
 import re
@@ -568,6 +569,39 @@ async def plan_trip(users: List[UserInput]) -> dict:
                 "flights_override": amadeus_flights_by_city
             })
 
+            # NEW: Produce hotel recommendations using HotelSearchTool
+            try:
+                import json as _json
+                hotel_tool = HotelSearchTool()
+                # Use destination airport code already resolved by flight_groups conversion
+                dest_airport_code = get_airport_code_with_fallback(destination)
+                hotel_input = {
+                    "destinations": [dest_airport_code],
+                    "check_in": departure_date,
+                    "check_out": return_date,
+                    "group_accommodation_style": primary_accommodation_style,
+                    "accommodation_details": accommodation_details
+                }
+                hotel_output_raw = hotel_tool._call(_json.dumps(hotel_input))
+                hotel_output = _json.loads(hotel_output_raw)
+                # Extract recommendations for the destination code
+                hotel_block = None
+                if isinstance(hotel_output, dict):
+                    hotel_block = hotel_output.get(dest_airport_code) or hotel_output.get(destination) or hotel_output
+                hotel_recommendations = None
+                if isinstance(hotel_block, dict):
+                    rec = hotel_block.get("recommended")
+                    alts = hotel_block.get("alternates", [])
+                    all_hotels = hotel_block.get("hotels", [])
+                    if rec or alts or all_hotels:
+                        hotel_recommendations = {
+                            "recommended": rec,
+                            "alternates": alts,
+                            "all": all_hotels
+                        }
+            except Exception as _e:
+                hotel_recommendations = None
+
             # Align itinerary to arrivals and surface structured itinerary for frontend
             aligned_itinerary = _align_itinerary_with_arrivals(
                 agent_result["agent_response"],
@@ -599,6 +633,8 @@ async def plan_trip(users: List[UserInput]) -> dict:
                     "subject_to_availability": True,
                     "by_departure_city": amadeus_flights_by_city
                 },
+                # NEW: Surface hotel recommendations for UI (recommended + alternates)
+                **({"hotel_recommendations": hotel_recommendations} if hotel_recommendations else {}),
                 # Provide aligned itinerary so the UI can avoid day-1 scheduling when arrivals are late or spread
                 **(aligned_itinerary if aligned_itinerary else {})
             }
