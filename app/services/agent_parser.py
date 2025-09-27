@@ -362,29 +362,40 @@ class AgentResponseParser:
         """
         daily_itinerary = {}
         
-        # Look for activity itinerary section
-        activity_section = self._extract_activity_section(response)
-        if not activity_section:
-            return {"daily_itinerary": daily_itinerary}
+        # Look for activity itinerary section (be permissive). If not found, parse whole response.
+        activity_section = self._extract_activity_section(response) or response
         
         # Parse each day's activities (avoid matching "Day X Total:" lines)
-        day_pattern = r"\*\*Day\s+(\d+):\*\*\s*(.*?)(?=\*\*Day\s+\d+|\*\*TOTAL|$)"
-        day_matches = re.finditer(day_pattern, activity_section, re.IGNORECASE | re.DOTALL)
+        # Accept variations like: **Day 1:**, **Day 1 -**, Day 1 —, Day 1:, Day 1 -, Day 1
+        day_pattern = r"(?:\*\*\s*)?Day\s+(\d+)\s*(?::|[-–—])?\s*(?:\*\*)?\s*(.*?)(?=(?:\*\*\s*)?Day\s+\d+|(?:\*\*)?\s*TOTAL|$)"
+        day_matches = list(re.finditer(day_pattern, activity_section, re.IGNORECASE | re.DOTALL))
         
-        for day_match in day_matches:
-            day_num = int(day_match.group(1))
-            day_content = day_match.group(2)
-            
-            # Parse individual activities for this day
-            activities_in_day = self._parse_structured_activities(day_content, day_num)
-            
-            # Structure in the format frontend expects
-            day_key = f"day_{day_num}"
-            daily_itinerary[day_key] = {
-                "day_number": day_num,
-                "day_label": f"Day {day_num}",
-                "activities": activities_in_day
-            }
+        if day_matches:
+            for day_match in day_matches:
+                day_num = int(day_match.group(1))
+                day_content = day_match.group(2)
+                
+                # Parse individual activities for this day
+                activities_in_day = self._parse_structured_activities(day_content, day_num)
+                
+                # Structure in the format frontend expects
+                day_key = f"day_{day_num}"
+                daily_itinerary[day_key] = {
+                    "day_number": day_num,
+                    "day_label": f"Day {day_num}",
+                    "activities": activities_in_day
+                }
+        else:
+            # Fallback: no explicit day headers found; parse whole section as Day 1
+            activities_in_day = self._parse_structured_activities(activity_section, 1)
+            if activities_in_day:
+                daily_itinerary["day_1"] = {
+                    "day_number": 1,
+                    "day_label": "Day 1",
+                    "activities": activities_in_day
+                }
+
+        # Removed placeholder synthesis; rely on real extracted items only
         
         return {"daily_itinerary": daily_itinerary}
     
@@ -392,7 +403,11 @@ class AgentResponseParser:
         """Extract the activity itinerary section."""
         patterns = [
             r"\*\*ACTIVITY ITINERARY.*?\*\*(.*?)(?=\*\*[A-Z]|\Z)",
-            r"ACTIVITY ITINERARY.*?(?=\n)(.*?)(?=BOOKING LINKS|FINAL|\*\*TOTAL|$)"
+            r"ACTIVITY ITINERARY.*?(?=\n)(.*?)(?=BOOKING LINKS|FINAL|\*\*TOTAL|$)",
+            r"\*\*ACTIVITIES\*\*(.*?)(?=\*\*[A-Z]|\Z)",
+            r"\*\*ITINERARY\*\*(.*?)(?=\*\*[A-Z]|\Z)",
+            r"ITINERARY(.*?)(?=BOOKING LINKS|FINAL|\*\*TOTAL|$)",
+            r"ACTIVITIES(.*?)(?=BOOKING LINKS|FINAL|\*\*TOTAL|$)"
         ]
         
         for pattern in patterns:
@@ -409,7 +424,7 @@ class AgentResponseParser:
         activities = []
         
         # Try structured format first (Activity: name, Description: ..., etc.)
-        activity_blocks = re.split(r'(?=Activity:)', day_content)
+        activity_blocks = re.split(r'(?=Activity:|Name:)', day_content)
         
         for block in activity_blocks:
             if 'Activity:' in block:
@@ -476,8 +491,8 @@ class AgentResponseParser:
         """Parse a single activity line and format for frontend."""
         original_line = line
         
-        # Remove bullet points and time stamps
-        line = re.sub(r'^[\-\*•]\s*', '', line).strip()
+        # Remove bullet points and time stamps (support -, *, •, –, —)
+        line = re.sub(r'^[\-\*•–—]\s*', '', line).strip()
         line = re.sub(r'^\d{1,2}:\d{2}\s*[-–]?\s*', '', line).strip()
         
         # Skip non-activity lines

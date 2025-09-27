@@ -64,8 +64,8 @@ class GooglePlacesService:
                 "keywords": ["scenic viewpoint", "photo spot", "panoramic view", "landmark"]
             },
             "Beaches": {
-                "place_types": ["tourist_attraction"],
-                "keywords": ["beach", "waterfront", "coastal view", "seaside"]
+                "place_types": ["natural_feature", "tourist_attraction"],
+                "keywords": ["beach", "playa", "platja", "seaside", "coast", "coastal view", "waterfront"]
             },
             "Nightlife": {
                 "place_types": ["bar", "night_club"],
@@ -144,10 +144,10 @@ class GooglePlacesService:
                     )
                     all_activities.extend(activities)
                 
-                # Search by keywords using Text Search
+                # Search by keywords using Text Search (biased to destination)
                 for keyword in mapping["keywords"]:
                     activities = self._search_places_by_text(
-                        f"{keyword} in {destination}", destination, interest
+                        f"{keyword} in {destination}", destination, interest, lat, lng
                     )
                     all_activities.extend(activities)
         
@@ -207,20 +207,46 @@ class GooglePlacesService:
             
             # Set field mask for cost optimization
             headers = self.headers.copy()
-            headers["X-Goog-FieldMask"] = "places.location"
+            # Include address and types so we can disambiguate (avoid 'Barcelona Wine Bar' in Boston)
+            headers["X-Goog-FieldMask"] = "places.location,places.formattedAddress,places.types,places.displayName"
             
             payload = {
-                "textQuery": destination,
-                "maxResultCount": 1
+                # Bias query toward the city entity
+                "textQuery": f"{destination} city",
+                "maxResultCount": 5
             }
             
             response = requests.post(url, json=payload, headers=headers, timeout=10)
             response.raise_for_status()
             data = response.json()
             
-            if data.get("places"):
-                location = data["places"][0]["location"]
-                return location["latitude"], location["longitude"]
+            places = data.get("places") or []
+            if places:
+                # Prefer results whose formattedAddress contains the destination token (true for real cities)
+                dest_token = (destination or "").strip().lower()
+                def _score(p: Dict) -> int:
+                    score = 0
+                    try:
+                        types = p.get("types", []) or []
+                        if any(t in types for t in ["locality", "political"]):
+                            score += 2
+                        addr = (p.get("formattedAddress") or "").lower()
+                        if dest_token and dest_token in addr:
+                            score += 3
+                        name = (p.get("displayName", {}) or {}).get("text", "").lower()
+                        if dest_token and dest_token in name:
+                            score += 1
+                        # Deprioritize obvious US addresses when searching international cities
+                        if "united states" in addr:
+                            score -= 2
+                    except Exception:
+                        pass
+                    return score
+
+                best = max(places, key=_score)
+                loc = best.get("location") or {}
+                if "latitude" in loc and "longitude" in loc:
+                    return loc["latitude"], loc["longitude"]
             
             return None
             
@@ -273,7 +299,7 @@ class GooglePlacesService:
             logger.error(f"Error searching nearby places: {e}")
             return []
     
-    def _search_places_by_text(self, query: str, destination: str, interest: str) -> List[Dict]:
+    def _search_places_by_text(self, query: str, destination: str, interest: str, center_lat: Optional[float] = None, center_lng: Optional[float] = None) -> List[Dict]:
         """Search for places using text query with Text Search."""
         try:
             url = f"{self.base_url}:searchText"
@@ -287,26 +313,57 @@ class GooglePlacesService:
                 "places.currentOpeningHours,places.regularOpeningHours,places.photos"
             )
             
-            payload = {
+            payload: Dict[str, any] = {
                 "textQuery": query,
                 "maxResultCount": 8
             }
+            # Bias results around destination if we know its coordinates
+            if isinstance(center_lat, (int, float)) and isinstance(center_lng, (int, float)):
+                payload["locationBias"] = {
+                    "circle": {
+                        "center": {
+                            "latitude": float(center_lat),
+                            "longitude": float(center_lng)
+                        },
+                        "radius": 15000.0  # 15km bias
+                    }
+                }
             
             response = requests.post(url, json=payload, headers=headers, timeout=10)
             response.raise_for_status()
             data = response.json()
             
-            activities = []
+            activities: List[Dict] = []
             for place in data.get("places", []):
                 activity = self._parse_place_to_activity(place, destination, interest)
-                if activity:
-                    activities.append(activity)
+                if not activity:
+                    continue
+                # If we have a center, filter out far-away places to avoid cross-city leakage
+                if isinstance(center_lat, (int, float)) and isinstance(center_lng, (int, float)):
+                    plat = activity.get("location", {}).get("lat")
+                    plng = activity.get("location", {}).get("lng")
+                    if isinstance(plat, (int, float)) and isinstance(plng, (int, float)):
+                        if self._haversine_km(center_lat, center_lng, float(plat), float(plng)) > 30.0:
+                            continue
+                activities.append(activity)
             
             return activities
             
         except Exception as e:
             logger.error(f"Error searching places by text: {e}")
             return []
+
+    def _haversine_km(self, lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+        """Great-circle distance between two points in km."""
+        from math import radians, sin, cos, atan2, sqrt
+        R = 6371.0088
+        phi1 = radians(lat1)
+        phi2 = radians(lat2)
+        dphi = radians(lat2 - lat1)
+        dlambda = radians(lon2 - lon1)
+        a = sin(dphi/2)**2 + cos(phi1) * cos(phi2) * sin(dlambda/2)**2
+        c = 2 * atan2(sqrt(a), sqrt(1 - a))
+        return R * c
     
     def _parse_place_to_activity(self, place: Dict, destination: str, interest: str) -> Optional[Dict]:
         """Convert New Places API result to standardized activity format."""
@@ -421,6 +478,10 @@ class GooglePlacesService:
     def _determine_activity_type(self, place: Dict, interest: str) -> str:
         """Determine the activity type based on place and interest."""
         types = place.get("types", [])
+        name_text = (place.get("displayName", {}) or {}).get("text", "").lower()
+        # First, detect explicit beaches by name keyword (support English/Spanish/Catalan)
+        if ("beach" in name_text) or ("playa" in name_text) or ("platja" in name_text):
+            return "beach"
         
         if any(t in types for t in ["restaurant", "cafe", "bakery"]):
             return "dining"
@@ -482,10 +543,21 @@ class GooglePlacesService:
         filtered = []
         
         for activity in activities:
-            # Require minimum rating for quality
-            rating = activity.get("rating")
-            if rating and rating < 3.5:
-                continue
+            # If this search was for Beaches, enforce beach keyword to avoid cross-category leakage
+            if activity.get("interest") == "Beaches":
+                name_l = (activity.get("name") or "").lower()
+                # Accept beach names in English/Spanish/Catalan
+                if ("beach" not in name_l) and ("playa" not in name_l) and ("platja" not in name_l):
+                    continue
+                # Relax rating threshold for natural beaches
+                rating = activity.get("rating")
+                if rating and rating < 3.0:
+                    continue
+            else:
+                # For non-beach interests, apply general rating threshold
+                rating = activity.get("rating")
+                if rating and rating < 3.5:
+                    continue
             
             # Filter by travel style price preferences
             price_level = activity.get("price_info", {}).get("price_level", "Free")

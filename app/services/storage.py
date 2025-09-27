@@ -197,6 +197,14 @@ def get_trip_plan(group_code: str) -> Optional[dict]:
     trip_plans = load_trip_plans()
     return trip_plans.get(group_code)
 
+def delete_trip_plan(group_code: str):
+    """Delete a trip plan for a specific group"""
+    plans = load_trip_plans()
+    if group_code in plans:
+        del plans[group_code]
+        save_trip_plans(plans)
+
+
 def clear_all_data():
     """Clear all data"""
     ensure_storage_dir()

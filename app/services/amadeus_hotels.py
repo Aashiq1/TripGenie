@@ -57,10 +57,17 @@ def get_hotel_offers(
         target_ratings = rating_map.get(accommodation_preference, [3, 4])
         candidates: List[Dict] = []
         # Increase scan breadth a bit; we'll trim before offers fetch
-        for h in hotels_response.data[:50]:
+        # Session-level bad ID cache to reduce repeated 400s in sandbox
+        BAD_IDS = getattr(get_hotel_offers, "_BAD_IDS", set())
+        if not isinstance(BAD_IDS, set):
+            BAD_IDS = set()
+        # Consider fewer candidates to reduce 400/429s
+        for h in hotels_response.data[:40]:
             try:
                 hid = h.get('hotelId')
                 if not hid:
+                    continue
+                if hid in BAD_IDS:
                     continue
                 hotel_rating = int(h.get('rating', 0) or 0)
                 # Respect rating preference band, allow unrated (0)
@@ -105,7 +112,7 @@ def get_hotel_offers(
                 return (dist_key, -int(c.get('rating') or 0))
             candidates.sort(key=_cand_sort_key)
             # Trim to top-K before heavy offers calls
-            TOP_K = 12
+            TOP_K = 8
             filtered_hotels = [c['hotelId'] for c in candidates[:TOP_K]]
         
         # Step 2: Search for offers at these hotels - TRY INDIVIDUALLY
@@ -118,6 +125,7 @@ def get_hotel_offers(
         successful_searches = 0
         max_hotels_to_try = min(12, len(filtered_hotels))  # Try up to 12 ranked hotels
         
+        import time
         for hotel_id in filtered_hotels[:max_hotels_to_try]:
             try:
                 # Search one hotel at a time to handle availability issues
@@ -151,8 +159,22 @@ def get_hotel_offers(
                             
                             # Get price info
                             price_info = offer.get('price', {})
-                            base_price = float(price_info.get('base', 0))
-                            total_price = float(price_info.get('total', base_price))
+                            # Amadeus 'total' is for the whole stay; convert to per-night to avoid inflated totals downstream
+                            try:
+                                _total_for_stay = float(price_info.get('total')) if price_info.get('total') is not None else None
+                            except Exception:
+                                _total_for_stay = None
+                            try:
+                                _base_reported = float(price_info.get('base')) if price_info.get('base') is not None else None
+                            except Exception:
+                                _base_reported = None
+                            per_night_price = None
+                            if isinstance(num_nights, int) and num_nights > 0 and isinstance(_total_for_stay, (int, float)):
+                                per_night_price = float(_total_for_stay) / float(num_nights)
+                            elif isinstance(_base_reported, (int, float)):
+                                per_night_price = float(_base_reported)
+                            else:
+                                per_night_price = 100.0
                             
                             # Create room type key
                             room_key = f"{category}_{capacity}pax"
@@ -161,8 +183,7 @@ def get_hotel_offers(
                                 room_types_available[room_key] = {
                                     'capacity': capacity,
                                     'category': category,
-                                    'base_price_per_night': base_price,
-                                    'total_price_per_night': total_price,
+                                    'base_price_per_night': per_night_price,
                                     'bed_info': bed_info,
                                     'available_rooms': 1
                                 }
@@ -206,14 +227,26 @@ def get_hotel_offers(
                         break
                         
             except ResponseError as e:
-                if "NO ROOMS AVAILABLE" in str(e):
+                msg = str(e)
+                if "INVALID PROPERTY CODE" in msg or "INVALID OR MISSING DATA" in msg:
+                    # Mark this ID as bad for this process lifetime
+                    BAD_IDS.add(hotel_id)
+                    setattr(get_hotel_offers, "_BAD_IDS", BAD_IDS)
+                    # brief delay to avoid hammering
+                    time.sleep(0.2)
+                    continue
+                if "NO ROOMS AVAILABLE" in msg:
                     print(f"No rooms available at hotel {hotel_id}, trying next hotel...")
-                    continue  # Try next hotel
+                    # brief delay to be polite
+                    time.sleep(0.1)
+                    continue
                 else:
                     print(f"Hotel search error for {hotel_id}: {e}")
+                    time.sleep(0.1)
                     continue  # Try next hotel
             except Exception as e:
                 print(f"Error searching hotel {hotel_id}: {e}")
+                time.sleep(0.1)
                 continue  # Try next hotel
         
         if not hotels:
@@ -488,3 +521,66 @@ def _haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     a = math.sin(dphi/2)**2 + math.cos(phi1) * math.cos(phi2) * math.sin(dlambda/2)**2
     c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
     return R * c
+
+
+def get_best_room_price_for_hotel(
+    hotel_id: str,
+    check_in_date: str,
+    check_out_date: str,
+    adults: int,
+    currency: str = 'USD'
+) -> Optional[float]:
+    """
+    Fetch the best available per-night price for a specific hotel and occupancy.
+
+    Returns the lowest per-night price (float) or None if unavailable.
+    """
+    try:
+        # Compute number of nights
+        ci = datetime.strptime(check_in_date, '%Y-%m-%d')
+        co = datetime.strptime(check_out_date, '%Y-%m-%d')
+        nights = max(1, (co - ci).days)
+
+        resp = amadeus.shopping.hotel_offers_search.get(
+            hotelIds=[hotel_id],
+            checkInDate=check_in_date,
+            checkOutDate=check_out_date,
+            adults=max(1, int(adults or 1)),
+            roomQuantity=1,
+            currency=currency
+        )
+
+        best_per_night: Optional[float] = None
+
+        for hotel_data in getattr(resp, 'data', []) or []:
+            offers = hotel_data.get('offers', []) or []
+            for offer in offers:
+                try:
+                    # If guests field exists, prefer offers that match or exceed requested adults
+                    guests_info = offer.get('guests') or {}
+                    offer_adults = guests_info.get('adults')
+
+                    # Price total is for entire stay
+                    price_info = offer.get('price', {}) or {}
+                    total_for_stay_raw = price_info.get('total')
+                    if total_for_stay_raw is None:
+                        continue
+                    total_for_stay = float(total_for_stay_raw)
+                    per_night = total_for_stay / float(nights)
+
+                    # Filter/score by adults if available
+                    if isinstance(offer_adults, int):
+                        if offer_adults < adults:
+                            # Skip clearly under-occupancy offers
+                            continue
+                    # Track lowest per-night meeting occupancy
+                    if best_per_night is None or per_night < best_per_night:
+                        best_per_night = per_night
+                except Exception:
+                    continue
+
+        return best_per_night
+    except ResponseError:
+        return None
+    except Exception:
+        return None

@@ -103,6 +103,8 @@ def get_flight_offers(
         
         logger.debug(f"Search parameters: {search_params}")
         
+        # Request a broader set of offers for better pricing coverage
+        search_params["max"] = 20
         response = amadeus.shopping.flight_offers_search.get(**search_params)
         
         logger.info(f"API Response received. Data length: {len(response.data) if response.data else 0}")
@@ -119,7 +121,8 @@ def get_flight_offers(
             try:
                 flight_info = {
                     "destination": destination,
-                    "price_per_person": float(offer['price']['total']) / num_adults,
+                    # Normalize inconsistent payloads and avoid division issues
+                    "price_per_person": float(offer['price']['total']) / max(1, int(num_adults or 1)),
                     "total_price": float(offer['price']['total']),
                     "currency": offer['price']['currency'],
                     "airline": offer['validatingAirlineCodes'][0],

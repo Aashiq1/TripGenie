@@ -123,12 +123,13 @@ export const authAPI = {
 // Trip API
 export const tripAPI = {
   createTrip: async (tripData: any) => {
-    const response: AxiosResponse = await api.post('/inputs/group', tripData)
+    // New consolidated path under /trip; keep old path as fallback if needed
+    const response: AxiosResponse = await api.post('/trip/group', tripData)
     return response.data
   },
 
   joinTrip: async (groupCode: string, userInput: any) => {
-    const response: AxiosResponse = await api.post('/inputs/user', {
+    const response: AxiosResponse = await api.post('/trip/user', {
       ...userInput,
       group_code: groupCode,
     })
@@ -150,6 +151,11 @@ export const tripAPI = {
     return response.data
   },
 
+  resetPlan: async (groupCode: string) => {
+    const response: AxiosResponse = await api.delete(`/trip/${groupCode}/plan`)
+    return response.data
+  },
+
   getTripPlan: async (groupCode: string) => {
     const response: AxiosResponse = await api.get(`/trip/${groupCode}/plan`)
     return response.data
@@ -157,6 +163,11 @@ export const tripAPI = {
 
   getTripPreview: async (groupCode: string) => {
     const response: AxiosResponse = await api.get(`/trip/${groupCode}/preview`)
+    return response.data
+  },
+
+  resetTripPlan: async (groupCode: string) => {
+    const response: AxiosResponse = await api.delete(`/trip/${groupCode}/plan`)
     return response.data
   },
 }

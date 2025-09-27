@@ -84,37 +84,37 @@ async def calculate_date_range_cost(date_range: Dict, airport_groups: Dict, dest
                         "no_flights_reason": status.get('message', 'No flights found')
                     }
             
-            # Process results for the destination
-            destination_cost = 0
+            # Process results for the destination (aggregate all origins first)
+            destination_cost = 0.0
             valid_flights_found = False
-            
-            # Sum costs for all departure cities to this destination
+
             for group_key, dest_flights in flight_data.items():
                 if group_key in ["flight_search_status", "errors_encountered", "search_summary"]:
-                    continue  # Skip metadata
-                    
-                if destination in dest_flights:
-                        dest_data = dest_flights[destination]
-                        
-                        # Check if this is an error response
-                        if isinstance(dest_data, dict) and "error" in dest_data:
-                            print(f"  ⚠️ Flight search error for {group_key} -> {destination}: {dest_data.get('error', 'Unknown error')}")
-                            continue
-                        elif isinstance(dest_data, list) and dest_data:
-                            # Take the cheapest flight option
-                            cheapest = min(dest_data, key=lambda x: x.get('total_price', float('inf')))
-                            if cheapest.get('total_price', 0) > 0:
-                                destination_cost += cheapest.get('total_price', 0)
-                                valid_flights_found = True
-                
-                if valid_flights_found and destination_cost > 0:
-                    flight_results[destination] = destination_cost
-                    total_flight_cost += destination_cost
-                    print(f"  ✅ Found flights for {destination}: ${destination_cost}")
-                else:
-                    # No valid flights found - don't add penalty cost
-                    flight_results[destination] = 0
-                    print(f"  ❌ No valid flights found for {destination} - users can book manually")
+                    continue
+                if destination not in dest_flights:
+                    continue
+
+                dest_data = dest_flights[destination]
+                # Skip error payloads
+                if isinstance(dest_data, dict) and "error" in dest_data:
+                    print(f"  ⚠️ Flight search error for {group_key} -> {destination}: {dest_data.get('error', 'Unknown error')}")
+                    continue
+                # Aggregate cheapest per-origin if list
+                if isinstance(dest_data, list) and len(dest_data) > 0:
+                    cheapest = min(dest_data, key=lambda x: x.get('total_price', float('inf')))
+                    price = float(cheapest.get('total_price', 0) or 0)
+                    if price > 0:
+                        destination_cost += price
+                        valid_flights_found = True
+
+            # Decide after aggregation (partial success counts)
+            if valid_flights_found and destination_cost > 0:
+                flight_results[destination] = destination_cost
+                total_flight_cost += destination_cost
+                print(f"  ✅ Found flights for {destination}: ${int(destination_cost) if destination_cost.is_integer() else round(destination_cost, 2)}")
+            else:
+                flight_results[destination] = 0
+                print(f"  ❌ No valid flights found for {destination} - users can book manually")
                 
         except (json.JSONDecodeError, KeyError) as e:
             # If flight data is invalid, set to 0 - users can book manually
@@ -272,6 +272,17 @@ async def plan_trip(users: List[UserInput]) -> dict:
     group_profile = get_group_preferences(users)
     trip_data = prepare_ai_input(users)
     best_ranges = get_best_ranges(trip_data["date_to_users"], users)
+    # Filter out past windows
+    try:
+        from datetime import date as _date
+        today = _date.today()
+        best_ranges = [r for r in best_ranges if r.get("end_date") and r["end_date"] >= today]
+        if not best_ranges:
+            # If all windows are in the past, allow the last one to pass through to keep flow, but mark as not ideal
+            best_ranges = get_best_ranges(trip_data["date_to_users"], users)[-1:]
+            print("⚠️ All availability windows are in the past; proceeding with the most recent window.")
+    except Exception:
+        pass
 
     if not best_ranges:
         return {"error": "No overlapping availability found."}
@@ -424,15 +435,28 @@ async def plan_trip(users: List[UserInput]) -> dict:
             passenger_count = group["passenger_count"]
             # We pass the airport code destination used earlier by build_flight_requests_from_airports
             dest_airport = group["destinations"][0]
-            offers = get_flight_offers(
-                departure_city=from_city,
-                destination=dest_airport,
-                departure_date=departure_date,
-                return_date=return_date,
-                num_adults=passenger_count,
-                travel_class=("BUSINESS" if flight_preferences["travel_class"] == "business" else "ECONOMY"),
-                nonstop_only=flight_preferences.get("nonstop_preferred", False)
-            )
+            # Try once; retry once on empty/exception
+            def _fetch_offers():
+                return get_flight_offers(
+                    departure_city=from_city,
+                    destination=dest_airport,
+                    departure_date=departure_date,
+                    return_date=return_date,
+                    num_adults=passenger_count,
+                    travel_class=("BUSINESS" if flight_preferences["travel_class"] == "business" else "ECONOMY"),
+                    nonstop_only=flight_preferences.get("nonstop_preferred", False)
+                )
+            offers = None
+            try:
+                offers = _fetch_offers()
+                if not (isinstance(offers, list) and len(offers) > 0):
+                    offers = _fetch_offers()
+            except Exception:
+                # one more retry
+                try:
+                    offers = _fetch_offers()
+                except Exception:
+                    offers = None
 
             if isinstance(offers, list) and len(offers) > 0:
                 # Select best offer according to preferences (nonstop preference → duration → price)
@@ -449,7 +473,7 @@ async def plan_trip(users: List[UserInput]) -> dict:
             # Continue even if a particular city fails; booking links layer will add search links
             continue
 
-    def _align_itinerary_with_arrivals(agent_text: str, flights_by_city: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
+    def _align_itinerary_with_arrivals(agent_text: str, flights_by_city: Dict[str, Dict[str, Any]], departure_date: str = None, return_date: str = None) -> Dict[str, Any]:
         """Parse itinerary and adjust Day 1 based on arrival time window.
         Returns a dict like {"daily_itinerary": {...}} suitable for frontend.
         """
@@ -458,7 +482,30 @@ async def plan_trip(users: List[UserInput]) -> dict:
             parsed = parser.extract_activity_data(agent_text) or {}
             daily = parsed.get("daily_itinerary", {})
             if not daily:
-                return parsed
+                # Synthesize a minimal daily_itinerary from provided date range so frontend always has structure
+                try:
+                    if departure_date and return_date:
+                        from datetime import datetime as _dt
+                        start = _dt.strptime(departure_date, "%Y-%m-%d").date()
+                        end = _dt.strptime(return_date, "%Y-%m-%d").date()
+                        days = max(0, (end - start).days)
+                        synthesized = {}
+                        for i in range(days):
+                            day_num = i + 1
+                            key = f"day_{day_num}"
+                            synthesized[key] = {
+                                "day_number": day_num,
+                                "day_label": f"Day {day_num}",
+                                "activities": []
+                            }
+                        if synthesized:
+                            daily = synthesized
+                        else:
+                            return parsed
+                    else:
+                        return parsed
+                except Exception:
+                    return parsed
 
             # Collect arrival times
             arrival_times: List[datetime] = []
@@ -496,6 +543,27 @@ async def plan_trip(users: List[UserInput]) -> dict:
                     daily[day1_key]["activities"] = []
                     daily[day1_key]["day_label"] = daily[day1_key].get("day_label", "Day 1") + " (Arrival Day)"
                     daily[day1_key]["note"] = "Group arrivals are spread; no scheduled activities. Rest and check-in."
+
+            # Clear activities on departure day (final day) to avoid late-night plans before flight
+            # Identify the last day key present in the parsed itinerary
+            last_day_key = None
+            max_day_num = -1
+            for k in daily.keys():
+                if isinstance(k, str) and k.lower().startswith("day_"):
+                    try:
+                        num = int(k.split("_", 1)[1])
+                        if num > max_day_num:
+                            max_day_num = num
+                            last_day_key = k
+                    except Exception:
+                        continue
+            if last_day_key and isinstance(daily.get(last_day_key), dict):
+                daily[last_day_key]["activities"] = []
+                # Append a note indicating departure day
+                existing_label = daily[last_day_key].get("day_label", f"Day {max_day_num}")
+                if "(Departure Day)" not in str(existing_label):
+                    daily[last_day_key]["day_label"] = f"{existing_label} (Departure Day)"
+                daily[last_day_key]["note"] = "Departure day. No scheduled activities to allow for travel."
 
             return {"daily_itinerary": daily}
         except Exception:
@@ -599,14 +667,104 @@ async def plan_trip(users: List[UserInput]) -> dict:
                             "alternates": alts,
                             "all": all_hotels
                         }
+                # Merge/override with agent-suggested hotel if present
+                try:
+                    parser_for_hotel = AgentResponseParser()
+                    parsed_hotel = parser_for_hotel.extract_hotel_data(agent_result.get("agent_response", ""), user_preferences) or {}
+                    agent_hotel_name = parsed_hotel.get("name")
+                    # Guard against test/placeholder noise
+                    def _is_suspicious(name: str) -> bool:
+                        n = (name or "").strip().lower()
+                        if len(n) < 3:
+                            return True
+                        bad_tokens = ["test", "testing", "placeholder", "connection"]
+                        return any(t in n for t in bad_tokens)
+
+                    if agent_hotel_name and not _is_suspicious(agent_hotel_name):
+                        # Build a recommendation-like payload from agent data
+                        from datetime import datetime as _dt
+                        check_in_str = parsed_hotel.get("check_in") or departure_date
+                        check_out_str = parsed_hotel.get("check_out") or return_date
+                        nights_calc = 0
+                        try:
+                            _ci = _dt.strptime(check_in_str, "%Y-%m-%d")
+                            _co = _dt.strptime(check_out_str, "%Y-%m-%d")
+                            nights_calc = max(1, (_co - _ci).days)
+                        except Exception:
+                            nights_calc = parsed_hotel.get("total_nights") or 0
+
+                        total_cost = parsed_hotel.get("total_cost")
+                        if total_cost in (None, 0):
+                            ppn = parsed_hotel.get("price_per_night")
+                            if isinstance(ppn, (int, float)) and nights_calc:
+                                total_cost = int(ppn) * int(nights_calc)
+
+                        agent_rec_payload = {
+                            "hotel_name": agent_hotel_name,
+                            "hotel_rating": parsed_hotel.get("rating") or "Unrated",
+                            "address": parsed_hotel.get("city") or destination,
+                            "room_configuration": parsed_hotel.get("room_configuration"),
+                            "total_cost_per_night": parsed_hotel.get("price_per_night"),
+                            "total_trip_cost": total_cost,
+                            "nights": nights_calc,
+                            "source": "agent_suggested"
+                        }
+
+                        if hotel_recommendations:
+                            current_rec = hotel_recommendations.get("recommended")
+                            # If current rec exists and is different, push it into alternates
+                            if current_rec and (current_rec.get("hotel_name") or "").strip().lower() != agent_hotel_name.strip().lower():
+                                # Prepend current rec to alternates, dedupe by hotel_name
+                                existing_alts = hotel_recommendations.get("alternates") or []
+                                new_alts = [current_rec] + existing_alts
+                                seen = set()
+                                deduped = []
+                                for h in new_alts:
+                                    key = (h.get("hotel_name") or "").strip().lower()
+                                    if key and key not in seen:
+                                        seen.add(key)
+                                        deduped.append(h)
+                                hotel_recommendations["alternates"] = deduped
+                            hotel_recommendations["recommended"] = agent_rec_payload
+                        else:
+                            hotel_recommendations = {
+                                "recommended": agent_rec_payload,
+                                "alternates": [],
+                                "all": []
+                            }
+                except Exception:
+                    pass
             except Exception as _e:
                 hotel_recommendations = None
 
             # Align itinerary to arrivals and surface structured itinerary for frontend
             aligned_itinerary = _align_itinerary_with_arrivals(
                 agent_result["agent_response"],
-                amadeus_flights_by_city
+                amadeus_flights_by_city,
+                departure_date,
+                return_date
             )
+
+            # If no activities parsed this run, carry over last saved daily_itinerary (so UI doesn't go blank)
+            try:
+                def _has_any_activity(daily: Dict[str, Any]) -> bool:
+                    try:
+                        for _k, v in (daily or {}).items():
+                            acts = v.get("activities", []) if isinstance(v, dict) else []
+                            if isinstance(acts, list) and len(acts) > 0:
+                                return True
+                        return False
+                    except Exception:
+                        return False
+
+                current_daily = (aligned_itinerary or {}).get("daily_itinerary", {})
+                if not _has_any_activity(current_daily):
+                    prev_plan = storage.get_trip_plan(group_code)
+                    prev_daily = (prev_plan or {}).get("daily_itinerary", {})
+                    if _has_any_activity(prev_daily):
+                        aligned_itinerary = {"daily_itinerary": prev_daily}
+            except Exception:
+                pass
             
             # Log booking results
             if booking_links.get('success'):
@@ -618,6 +776,54 @@ async def plan_trip(users: List[UserInput]) -> dict:
             else:
                 print(f"⚠️ Failed to extract booking links: {booking_links.get('error', 'Unknown error')}")
             
+            # === Merge with previous saved plan to avoid wiping good sections ===
+            try:
+                prev_plan = storage.get_trip_plan(group_code)
+            except Exception:
+                prev_plan = None
+            # Flights: if empty, use previous; also merge missing cities
+            if prev_plan:
+                prev_flights = (prev_plan.get("flights", {}) or {}).get("by_departure_city", {})
+                if isinstance(prev_flights, dict):
+                    if not amadeus_flights_by_city:
+                        amadeus_flights_by_city = prev_flights
+                    else:
+                        # merge missing keys
+                        for _k, _v in prev_flights.items():
+                            if _k not in amadeus_flights_by_city:
+                                amadeus_flights_by_city[_k] = _v
+            # Hotel recommendations: if missing/empty, reuse previous
+            def _is_empty_hotel(hr: dict) -> bool:
+                if not isinstance(hr, dict):
+                    return True
+                rec = hr.get("recommended")
+                alts = hr.get("alternates") or []
+                allh = hr.get("all") or []
+                return (not rec) and len(alts) == 0 and len(allh) == 0
+            if prev_plan:
+                prev_hotel = prev_plan.get("hotel_recommendations")
+                if (hotel_recommendations is None) or _is_empty_hotel(hotel_recommendations):
+                    if prev_hotel:
+                        hotel_recommendations = prev_hotel
+            # Booking links: if failed or empty, reuse previous
+            if prev_plan:
+                prev_links = prev_plan.get("booking_links")
+                def _links_empty(links: dict) -> bool:
+                    if not isinstance(links, dict):
+                        return True
+                    flights_blk = (links.get('flights') or {})
+                    hotel_blk = (links.get('hotel') or {})
+                    acts_blk = links.get('activities') or []
+                    total = 0
+                    try:
+                        total += int((links.get('summary') or {}).get('grand_total_links', 0))
+                    except Exception:
+                        pass
+                    # consider empty if no summary and no per-section links
+                    return total == 0 and not flights_blk and not hotel_blk and not acts_blk
+                if (not booking_links) or (not booking_links.get('success') and prev_links and not _links_empty(prev_links)):
+                    booking_links = prev_links or booking_links
+
             result = {
                 "system": "LangChain Agent with Tools",
                 "agent_response": agent_result["agent_response"],

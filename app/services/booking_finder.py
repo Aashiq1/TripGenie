@@ -258,7 +258,8 @@ class BookingFinderService:
             "priceline.com": "Priceline",
             "marriott.com": "Marriott",
             "hilton.com": "Hilton",
-            "google.com/flights": "Google Flights"
+            "google.com/flights": "Google Flights",
+            "google.com/travel/flights": "Google Flights"
         }
         
         for domain, name in platform_map.items():
@@ -307,23 +308,25 @@ class BookingFinderService:
         dest = flight_data.get("destination", "")
         depart_date = flight_data.get("departure_date", "")
         return_date = flight_data.get("return_date", "")
+        adults = flight_data.get("num_passengers") or 1
+        # Use query-style Google Flights link (more reliable across regions)
+        gf_query = (
+            "https://www.google.com/travel/flights?q="
+            f"{origin}%20to%20{dest}%20on%20{depart_date}%20return%20{return_date}"
+        )
+        # Expedia flights search tends to work with leg specs and TANYT for time
+        expedia = (
+            "https://www.expedia.com/Flights-Search?trip=roundtrip"
+            f"&leg1=from:{origin},to:{dest},departure:{depart_date}TANYT"
+            f"&leg2=from:{dest},to:{origin},departure:{return_date}TANYT"
+            f"&passengers=adults:{adults}"
+            "&mode=search"
+        )
         
         return [
-            {
-                "platform": "Google Flights",
-                "url": f"https://www.google.com/flights/#search;f={origin};t={dest};d={depart_date};r={return_date}",
-                "type": "search"
-            },
-            {
-                "platform": "Kayak",
-                "url": f"https://www.kayak.com/flights/{origin}-{dest}/{depart_date}/{return_date}",
-                "type": "search"
-            },
-            {
-                "platform": "Expedia",
-                "url": f"https://www.expedia.com/Flights-Search?trip=roundtrip&leg1=from:{origin},to:{dest},departure:{depart_date}&leg2=from:{dest},to:{origin},departure:{return_date}",
-                "type": "search"
-            }
+            {"platform": "Google Flights", "url": gf_query, "type": "search"},
+            {"platform": "Kayak", "url": f"https://www.kayak.com/flights/{origin}-{dest}/{depart_date}/{return_date}", "type": "search"},
+            {"platform": "Expedia", "url": expedia, "type": "search"}
         ]
     
     def _generate_hotel_search_links(self, hotel_data: Dict) -> List[Dict]:

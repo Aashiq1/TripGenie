@@ -180,6 +180,9 @@ export function TripPreferences() {
       const result = await tripAPI.joinTrip(groupCode, userInput)
       
       if (result.success) {
+        if (result.requires_replan) {
+          console.warn('Preferences changed require re-planning')
+        }
         setSuccess(true)
         setError(null)
         

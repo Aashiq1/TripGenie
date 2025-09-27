@@ -66,19 +66,31 @@ export function ActivitySearch({ destination = '', onActivitySelect, className =
   const [results, setResults] = useState<ActivitySearchResponse | null>(null)
   const [availableInterests, setAvailableInterests] = useState<string[]>([])
   const [error, setError] = useState<string | null>(null)
-  const [showFilters, setShowFilters] = useState(false)
 
-  // Load available interests on component mount
+  // Load available interests on component mount, and auto-select a few + auto-search
   useEffect(() => {
     const loadInterests = async () => {
       try {
         const response = await activityAPI.getAvailableInterests()
-        setAvailableInterests(response.available_interests || [])
+        const interests = response.available_interests || []
+        setAvailableInterests(interests)
+        // If none selected yet, pick up to 3 defaults to ensure results render
+        if (interests.length > 0 && selectedInterests.length === 0) {
+          const defaults = interests.slice(0, Math.min(3, interests.length))
+          setSelectedInterests(defaults)
+          // Trigger an initial search if we have a destination
+          if ((destination || searchDestination).trim()) {
+            setTimeout(() => {
+              handleSearch()
+            }, 0)
+          }
+        }
       } catch (error) {
         console.error('Failed to load interests:', error)
       }
     }
     loadInterests()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   const handleSearch = async () => {
@@ -142,13 +154,6 @@ export function ActivitySearch({ destination = '', onActivitySelect, className =
         <h3 className="text-xl font-semibold text-gray-900">
           🎯 Activity Search
         </h3>
-        <button
-          onClick={() => setShowFilters(!showFilters)}
-          className="flex items-center gap-2 px-3 py-2 text-sm text-gray-600 hover:text-gray-900 transition-colors"
-        >
-          <Filter className="h-4 w-4" />
-          Filters
-        </button>
       </div>
 
       {/* Search Form */}
@@ -192,37 +197,6 @@ export function ActivitySearch({ destination = '', onActivitySelect, className =
             ))}
           </div>
         </div>
-
-        {/* Travel Style Filter */}
-        <AnimatePresence>
-          {showFilters && (
-            <motion.div
-              initial={{ opacity: 0, height: 0 }}
-              animate={{ opacity: 1, height: 'auto' }}
-              exit={{ opacity: 0, height: 0 }}
-              className="overflow-hidden"
-            >
-              <label className="block text-sm font-medium text-gray-700 mb-2">
-                Travel Style
-              </label>
-              <div className="flex gap-2">
-                {['budget', 'balanced', 'luxury'].map((style) => (
-                  <button
-                    key={style}
-                    onClick={() => setTravelStyle(style)}
-                    className={`px-4 py-2 text-sm rounded-lg border transition-colors ${
-                      travelStyle === style
-                        ? 'bg-blue-500 text-white border-blue-500'
-                        : 'bg-white text-gray-700 border-gray-300 hover:border-blue-500'
-                    }`}
-                  >
-                    {style.charAt(0).toUpperCase() + style.slice(1)}
-                  </button>
-                ))}
-              </div>
-            </motion.div>
-          )}
-        </AnimatePresence>
 
         {/* Search Button */}
         <button

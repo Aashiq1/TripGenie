@@ -101,7 +101,9 @@ class CompleteBookingIntegration:
                     'destination': flight_data.get('destination', ''),
                     'departure_date': flight_data.get('departure_date', ''),
                     'return_date': flight_data.get('return_date', ''),
-                    'price': flight_data.get('price', 0)
+                    # Prefer total_price if present from Amadeus offers
+                    'price': flight_data.get('price', flight_data.get('total_price', 0)),
+                    'num_passengers': flight_data.get('num_passengers')
                 }
                 
                 # Get booking links

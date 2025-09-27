@@ -235,6 +235,10 @@ export function JoinTrip() {
       const result = await tripAPI.joinTrip(tripPreview.groupCode, userInput)
       
       if (result.success) {
+        if (result.requires_replan) {
+          // If this edit impacts planning, inform the user right away
+          console.warn('Preferences changed require re-planning')
+        }
         // Show brief success state
         setJoinSuccess(true)
         setError(null)

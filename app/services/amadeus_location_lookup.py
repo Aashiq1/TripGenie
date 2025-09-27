@@ -90,6 +90,8 @@ def get_airport_code_with_fallback(city_name: str) -> str:
     city_to_airport_fallback = {
         "madrid": "MAD",
         "barcelona": "BCN", 
+        "marrakech": "RAK",
+        "marrakesh": "RAK",
         "palma de mallorca": "PMI",
         "palma": "PMI",
         "malaga": "AGP",
@@ -141,6 +143,7 @@ def iata_to_city_name(iata_code: str) -> str:
         # Spain
         "MAD": "Madrid",
         "BCN": "Barcelona", 
+        "RAK": "Marrakech",
         "PMI": "Palma de Mallorca",
         "AGP": "Malaga",
         "ALC": "Alicante",

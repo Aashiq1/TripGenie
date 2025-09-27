@@ -60,9 +60,13 @@ interface TripDetails {
   itinerary: ItineraryItem[]
 }
 
-// Helper function to check if trip plan exists
+// Helper function to check if trip plan exists (support structured plans too)
 function hasTripPlan(tripPlan: any): boolean {
-  return tripPlan && tripPlan.agent_response
+  if (!tripPlan) return false
+  if (tripPlan.agent_response) return true
+  if (tripPlan.daily_itinerary) return true
+  if (tripPlan.date_range || tripPlan.cost_optimization) return true
+  return false
 }
 
 // Helper function to transform backend itinerary data to frontend format
@@ -103,11 +107,35 @@ function transformItineraryData(tripPlan: any): ItineraryItem[] {
       // Fallback: synthesize empty days from optimized dates if available
       const start = parsedData?.date_range?.start_date || parsedData?.cost_optimization?.departure_date
       const end = parsedData?.date_range?.end_date || parsedData?.cost_optimization?.return_date
+
+      const parseDateLocal = (s: string) => {
+        if (!s) return null as any
+        // If string includes time, rely on native parser
+        if (s.includes('T')) {
+          const d = new Date(s)
+          return isNaN(d.getTime()) ? null : d
+        }
+        const parts = s.split('-').map(p => parseInt(p, 10))
+        if (parts.length === 3) {
+          const d = new Date(parts[0], parts[1] - 1, parts[2])
+          return isNaN(d.getTime()) ? null : d
+        }
+        const d = new Date(s)
+        return isNaN(d.getTime()) ? null : d
+      }
+      const toYMD = (d: Date) => {
+        const y = d.getFullYear()
+        const m = String(d.getMonth() + 1).padStart(2, '0')
+        const dd = String(d.getDate()).padStart(2, '0')
+        return `${y}-${m}-${dd}`
+      }
+
       if (start && end) {
-        const startDate = new Date(start)
-        const endDate = new Date(end)
-        if (!isNaN(startDate.getTime()) && !isNaN(endDate.getTime())) {
-          const days = Math.max(0, Math.ceil((endDate.getTime() - startDate.getTime()) / (1000*60*60*24)))
+        const startDate = parseDateLocal(start)
+        const endDate = parseDateLocal(end)
+        if (startDate && endDate) {
+          const dayMs = 1000 * 60 * 60 * 24
+          const days = Math.max(0, Math.ceil((endDate.getTime() - startDate.getTime()) / dayMs))
           const items: ItineraryItem[] = []
           for (let i = 0; i < days; i++) {
             const d = new Date(startDate)
@@ -115,7 +143,8 @@ function transformItineraryData(tripPlan: any): ItineraryItem[] {
             items.push({
               id: `day_${i+1}`,
               day: i+1,
-              date: d.toISOString(),
+              // Use date-only string to avoid TZ shifts
+              date: toYMD(d),
               activities: []
             })
           }
@@ -133,7 +162,7 @@ function transformItineraryData(tripPlan: any): ItineraryItem[] {
         const dayData = dailyItinerary[dayKey]
         const dayNumber = dayData.day_number || parseInt(dayKey.replace('day_', ''))
         
-        const activities = dayData.activities?.map((activity: any, index: number) => ({
+        const activities = dayData.activities?.map((activity: any) => ({
           time: '09:00', // Default time since backend doesn't provide specific times
           title: activity.name || 'Activity',
           description: activity.description || `${activity.interest_category || ''} ${activity.activity_type || ''}`.trim(),
@@ -172,13 +201,30 @@ export function TripDetails() {
   const [editDestination, setEditDestination] = useState<string>('')
   const [isSavingDestinations, setIsSavingDestinations] = useState(false)
   const [tripPlan, setTripPlan] = useState<any>(null)
+  const [replanNotice, setReplanNotice] = useState(false)
+  const [isResettingPlan, setIsResettingPlan] = useState(false)
+
+  // Edit details (dates/budget/accommodation)
+  const [isEditingDetails, setIsEditingDetails] = useState(false)
+  const [editDepartureDate, setEditDepartureDate] = useState<string>('')
+  const [editReturnDate, setEditReturnDate] = useState<string>('')
+  const [editBudget, setEditBudget] = useState<string>('')
+  const [editAccommodation, setEditAccommodation] = useState<string>('standard')
 
   // Extract hotel recommendations (recommended + alternates) from tripPlan if present
   const getHotelRecommendations = (plan: any) => {
     if (!plan) return null
     if (plan.hotel_recommendations) {
       const hr = plan.hotel_recommendations
-      return { recommended: hr.recommended || null, alternates: hr.alternates || [], all: hr.all || [] }
+      let recommended = hr.recommended || null
+      let alternates = hr.alternates || []
+      const all = hr.all || []
+      // Fallback: if no explicit recommended/alternates but we have a list of hotels, promote top ones
+      if (!recommended && (!alternates || alternates.length === 0) && all && all.length > 0) {
+        recommended = all[0]
+        alternates = all.slice(1, 3)
+      }
+      return { recommended, alternates, all }
     }
     // Direct top-level
     if (plan.recommended || plan.alternates) {
@@ -201,6 +247,22 @@ export function TripDetails() {
       }
     } catch {}
     return null
+  }
+  const handleResetPlan = async () => {
+    if (!groupCode) return
+    setIsResettingPlan(true)
+    try {
+      const { tripAPI } = await import('../services/api')
+      await tripAPI.resetPlan(groupCode)
+      setTripPlan(null)
+      setTrip(prev => prev ? { ...prev, status: 'planning', itinerary: [] } : null)
+      setReplanNotice(true)
+    } catch (error: any) {
+      console.error('Failed to reset plan:', error)
+      window.alert(error?.response?.data?.detail || 'Failed to reset plan. Please try again.')
+    } finally {
+      setIsResettingPlan(false)
+    }
   }
 
   useEffect(() => {
@@ -277,19 +339,39 @@ export function TripDetails() {
 
   useEffect(() => {
     if (tripPlan) {
+      // Prefer optimized dates from cost_optimization block, then date_range
+      const optimizedDeparture = tripPlan?.cost_optimization?.departure_date || tripPlan?.date_range?.start_date
+      const optimizedReturn = tripPlan?.cost_optimization?.return_date || tripPlan?.date_range?.end_date
+
       setTrip(prev => prev ? {
         ...prev,
-        itinerary: transformItineraryData(tripPlan)
+        itinerary: transformItineraryData(tripPlan),
+        departureDate: optimizedDeparture || prev.departureDate,
+        returnDate: optimizedReturn || prev.returnDate
       } : null)
     }
   }, [tripPlan])
 
   const formatDate = (dateString: string) => {
     if (!dateString) return 'Not set'
-    
-    const date = new Date(dateString)
-    if (isNaN(date.getTime())) return 'Invalid date'
-    
+    const parseDateLocal = (s: string) => {
+      if (!s) return null as any
+      if (s.includes('T')) {
+        const d = new Date(s)
+        return isNaN(d.getTime()) ? null : d
+      }
+      const parts = s.split('-').map(p => parseInt(p, 10))
+      if (parts.length === 3) {
+        const d = new Date(parts[0], parts[1] - 1, parts[2])
+        return isNaN(d.getTime()) ? null : d
+      }
+      const d = new Date(s)
+      return isNaN(d.getTime()) ? null : d
+    }
+
+    const date = parseDateLocal(dateString)
+    if (!date) return 'Invalid date'
+
     return date.toLocaleDateString('en-US', {
       weekday: 'long',
       year: 'numeric',
@@ -302,10 +384,24 @@ export function TripDetails() {
   const formatDayDate = (dayItem: ItineraryItem) => {
     const primary = formatDate(dayItem.date)
     if (primary !== 'Invalid date') return primary
-    // Fallback using trip.departureDate
+    // Fallback using trip.departureDate with local parsing
     if (trip?.departureDate) {
-      const base = new Date(trip.departureDate)
-      if (!isNaN(base.getTime())) {
+      const parseDateLocal = (s: string) => {
+        if (!s) return null as any
+        if (s.includes('T')) {
+          const d = new Date(s)
+          return isNaN(d.getTime()) ? null : d
+        }
+        const parts = s.split('-').map(p => parseInt(p, 10))
+        if (parts.length === 3) {
+          const d = new Date(parts[0], parts[1] - 1, parts[2])
+          return isNaN(d.getTime()) ? null : d
+        }
+        const d = new Date(s)
+        return isNaN(d.getTime()) ? null : d
+      }
+      const base = parseDateLocal(trip.departureDate)
+      if (base) {
         const d = new Date(base)
         d.setDate(d.getDate() + Math.max(0, (dayItem.day || 1) - 1))
         return d.toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })
@@ -342,6 +438,53 @@ export function TripDetails() {
     }
   }
 
+  // Derive the signed-in user's departure city and flight/links from tripPlan
+  const getMyFlight = () => {
+    if (!tripPlan || !user?.email) return null
+    try {
+      const prefs = tripPlan.preferences_used
+      const flights = tripPlan.flights?.by_departure_city || {}
+      const booking = tripPlan.booking_links?.flights || {}
+      if (!prefs || !prefs.flight_groups) return null
+
+      // Map email to their group departure city
+      let myDepartureCity: string | null = null
+      for (const fg of prefs.flight_groups as any[]) {
+        if (Array.isArray(fg.passengers) && fg.passengers.includes(user.email)) {
+          myDepartureCity = fg.departure_city
+          break
+        }
+      }
+      if (!myDepartureCity) return null
+
+      let myFlightInfo = flights[myDepartureCity]
+      const bookingEntry = booking[myDepartureCity]
+      const myLinks = bookingEntry?.booking_links || []
+
+      // Fallback: if no Amadeus flight info, derive minimal info from booking links' flight_info
+      if (!myFlightInfo && bookingEntry?.flight_info) {
+        const fi = bookingEntry.flight_info
+        myFlightInfo = {
+          origin: fi.origin,
+          destination: fi.destination,
+          departure_date: fi.departure_date,
+          return_date: fi.return_date,
+          total_price: fi.price,
+          airline_code: fi.airline_code,
+          flight_number: fi.flight_number,
+          // Unknown fields when coming from booking fallback
+          stops: undefined,
+          duration: undefined
+        }
+      }
+      if (!myFlightInfo) return null
+
+      return { departureCity: myDepartureCity, flight: myFlightInfo, links: myLinks }
+    } catch {
+      return null
+    }
+  }
+
   const shareTrip = () => {
     if (navigator.share) {
       navigator.share({
@@ -372,11 +515,19 @@ export function TripDetails() {
         setPlanSuccess(true)
         console.log('✅ Trip planning completed successfully:', result)
         
-        // Only auto-reload in production, not development
+        // In development: fetch saved plan immediately to update UI without reload
         const isDevelopment = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1'
-        
-        if (!isDevelopment) {
-          // Refresh trip details to get updated status
+        if (isDevelopment) {
+          try {
+            const latestPlan = await tripAPI.getTripPlan(groupCode)
+            if (hasTripPlan(latestPlan)) {
+              setTripPlan(latestPlan)
+            }
+          } catch (e) {
+            console.warn('⚠️ Failed to fetch saved plan immediately:', e)
+          }
+        } else {
+          // In production, keep the previous auto-reload behavior
           setTimeout(() => {
             window.location.reload()
           }, 2000)
@@ -397,6 +548,8 @@ export function TripDetails() {
     }
   }
 
+  // (removed duplicate handleResetPlan)
+
   const handleSaveDestinations = async () => {
     if (!groupCode || !trip) return
 
@@ -409,36 +562,66 @@ export function TripDetails() {
     setError(null)
 
     try {
-      // Create trip data with updated destination
-      const tripData = {
-        group_code: groupCode,
-        destination: editDestination.trim(),
-        creator_email: user?.email || '',
-        created_at: trip.createdAt,
-        trip_name: trip.tripName,
-        departure_date: trip.departureDate,
-        return_date: trip.returnDate,
-        budget: parseInt(trip.budget) || null,
-        group_size: trip.members.length,
-        accommodation: trip.accommodation,
-        description: trip.description
-      }
-
       const { tripAPI } = await import('../services/api')
-      await tripAPI.createTrip(tripData) // This will update the existing trip
-
-      // Update local state
+      const res = await tripAPI.updateTrip(groupCode, {
+        destination: editDestination.trim()
+      })
+      const updated = res?.group || {}
+      const requiresReplan = !!(res?.requires_replan || res?.requires_replanning)
       setTrip(prev => prev ? {
         ...prev,
-        destination: editDestination.trim()
+        destination: updated.destination || editDestination.trim(),
+        status: requiresReplan ? 'planning' as any : prev.status
       } : null)
-
+      if (requiresReplan) setReplanNotice(true)
       setIsEditingDestinations(false)
     } catch (error: any) {
       console.error('Failed to update destination:', error)
-      setError('Failed to update destination. Please try again.')
+      // Avoid tripping the page-level fatal error overlay; surface inline feedback instead
+      window.alert(error?.response?.data?.detail || 'Failed to update destination. Please try again.')
     } finally {
       setIsSavingDestinations(false)
+    }
+  }
+
+  const handleEditDetails = () => {
+    if (!trip) return
+    setEditDepartureDate(trip.departureDate || '')
+    setEditReturnDate(trip.returnDate || '')
+    setEditBudget(trip.budget || '')
+    setEditAccommodation(trip.accommodation || 'standard')
+    setIsEditingDetails(true)
+  }
+
+  const handleCancelEditDetails = () => {
+    setIsEditingDetails(false)
+  }
+
+  const handleSaveDetails = async () => {
+    if (!groupCode || !trip) return
+    const payload: any = {}
+    if (editDepartureDate) payload.departure_date = editDepartureDate
+    if (editReturnDate) payload.return_date = editReturnDate
+    if (editBudget) payload.budget = parseInt(editBudget, 10)
+    if (editAccommodation) payload.accommodation = editAccommodation
+    try {
+      const { tripAPI } = await import('../services/api')
+      const res = await tripAPI.updateTrip(groupCode, payload)
+      const updated = res?.group || {}
+      const requiresReplan = !!(res?.requires_replan || res?.requires_replanning)
+      setTrip(prev => prev ? {
+        ...prev,
+        departureDate: updated.departure_date || editDepartureDate || prev.departureDate,
+        returnDate: updated.return_date || editReturnDate || prev.returnDate,
+        budget: (updated.budget != null ? String(updated.budget) : (editBudget || prev.budget)),
+        accommodation: updated.accommodation || editAccommodation || prev.accommodation,
+        status: requiresReplan ? 'planning' as any : prev.status
+      } : null)
+      if (requiresReplan) setReplanNotice(true)
+      setIsEditingDetails(false)
+    } catch (error: any) {
+      console.error('Failed to update trip details:', error)
+      window.alert(error?.response?.data?.detail || 'Failed to update trip details. Please try again.')
     }
   }
 
@@ -591,16 +774,15 @@ export function TripDetails() {
                   {/* Temporary Debug Button */}
                   {trip.status === 'planned' && (
                     <button
-                      onClick={() => {
-                        setTrip(prev => prev ? {...prev, status: 'planning'} : null)
-                      }}
-                      className="btn-secondary flex items-center space-x-2 text-xs"
+                      onClick={handleResetPlan}
+                      className="btn-secondary flex items-center space-x-2 text-xs disabled:opacity-50"
+                      disabled={isResettingPlan}
                     >
-                      <span>Reset Status (Debug)</span>
+                      <span>{isResettingPlan ? 'Resetting...' : 'Reset Plan'}</span>
                     </button>
                   )}
                   
-                  <button className="btn-primary flex items-center space-x-2">
+                  <button className="btn-primary flex items-center space-x-2" onClick={handleEditDetails}>
                     <Settings className="h-4 w-4" />
                     <span>Settings</span>
                   </button>
@@ -621,6 +803,18 @@ export function TripDetails() {
               </div>
             </div>
           </div>
+
+          {/* Replan notice */}
+          {replanNotice && (
+            <motion.div
+              initial={{ opacity: 0, y: 10 }}
+              animate={{ opacity: 1, y: 0 }}
+              className="flex items-center space-x-2 p-4 bg-yellow-50 border border-yellow-200 rounded-lg mb-3"
+            >
+              <AlertCircle className="h-5 w-5 text-yellow-600" />
+              <span className="text-yellow-700 text-sm">Trip details changed. Click “Plan Trip” to regenerate the itinerary.</span>
+            </motion.div>
+          )}
 
           {/* Plan Error */}
           {planError && (
@@ -750,6 +944,49 @@ export function TripDetails() {
                   )}
                 </div>
 
+                {/* My Flight */}
+                {(() => {
+                  const mine = getMyFlight()
+                  if (!mine) return null
+                  const f = mine.flight
+                  const links = mine.links
+                  return (
+                    <div className="card">
+                      <h3 className="text-lg font-semibold text-gray-900 mb-3">My Flight</h3>
+                      <div className="flex items-start justify-between">
+                        <div>
+                          <div className="font-medium text-gray-900">
+                            {f.origin} → {f.destination} ({f.airline_code || ''})
+                          </div>
+                          <div className="text-sm text-gray-600">
+                            Depart {formatDate(f.departure_date || trip?.departureDate)} • Return {formatDate(f.return_date || trip?.returnDate)}
+                          </div>
+                          <div className="text-xs text-gray-500 mt-1">
+                            {f.flight_number ? `Flight ${f.flight_number}` : ''} {f.stops != null ? `• ${f.stops} stop${f.stops === 1 ? '' : 's'}` : ''} {f.duration ? `• ${f.duration}` : ''}
+                          </div>
+                        </div>
+                        <div className="text-right">
+                          {f.total_price && (
+                            <>
+                              <div className="text-xs text-gray-600">Est. total</div>
+                              <div className="font-semibold text-gray-900">${f.total_price}</div>
+                            </>
+                          )}
+                        </div>
+                      </div>
+                      {links && links.length > 0 && (
+                        <div className="mt-3 flex flex-wrap gap-2">
+                          {links.slice(0, 3).map((l: any, idx: number) => (
+                            <a key={idx} href={l.url} target="_blank" rel="noreferrer" className="btn-secondary text-xs">
+                              Book on {l.platform}
+                            </a>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  )
+                })()}
+
                 {/* Accommodation Recommendations */}
                 {tripPlan && (() => {
                   const recs = getHotelRecommendations(tripPlan)
@@ -815,9 +1052,23 @@ export function TripDetails() {
                     <div className="text-2xl font-bold text-primary-600">
                       {(() => {
                         if (!trip.departureDate || !trip.returnDate) return 'TBD'
-                        const start = new Date(trip.departureDate)
-                        const end = new Date(trip.returnDate)
-                        if (isNaN(start.getTime()) || isNaN(end.getTime())) return 'TBD'
+                        const parseDateLocal = (s: string) => {
+                          if (!s) return null as any
+                          if (s.includes('T')) {
+                            const d = new Date(s)
+                            return isNaN(d.getTime()) ? null : d
+                          }
+                          const parts = s.split('-').map(p => parseInt(p, 10))
+                          if (parts.length === 3) {
+                            const d = new Date(parts[0], parts[1] - 1, parts[2])
+                            return isNaN(d.getTime()) ? null : d
+                          }
+                          const d = new Date(s)
+                          return isNaN(d.getTime()) ? null : d
+                        }
+                        const start = parseDateLocal(trip.departureDate)
+                        const end = parseDateLocal(trip.returnDate)
+                        if (!start || !end) return 'TBD'
                         const days = Math.ceil((end.getTime() - start.getTime()) / (1000 * 60 * 60 * 24))
                         return days > 0 ? days : 'TBD'
                       })()}
@@ -903,6 +1154,49 @@ export function TripDetails() {
                 )}
               </div>
 
+              {/* My Flight card also in Itinerary tab */}
+              {(() => {
+                const mine = getMyFlight()
+                if (!mine) return null
+                const f = mine.flight
+                const links = mine.links
+                return (
+                  <div className="card">
+                    <h3 className="text-lg font-semibold text-gray-900 mb-3">My Flight</h3>
+                    <div className="flex items-start justify-between">
+                      <div>
+                        <div className="font-medium text-gray-900">
+                          {f.origin} → {f.destination} ({f.airline_code || ''})
+                        </div>
+                        <div className="text-xs text-gray-600 mt-1">
+                          {f.flight_number ? `Flight ${f.flight_number}` : ''} {f.stops != null ? `• ${f.stops} stop${f.stops === 1 ? '' : 's'}` : ''} {f.duration ? `• ${f.duration}` : ''}
+                        </div>
+                        <div className="text-sm text-gray-600 mt-1">
+                          Depart {formatDate(f.departure_date || trip?.departureDate)} • Return {formatDate(f.return_date || trip?.returnDate)}
+                        </div>
+                      </div>
+                      <div className="text-right">
+                        {f.total_price && (
+                          <>
+                            <div className="text-xs text-gray-600">Est. total</div>
+                            <div className="font-semibold text-gray-900">${f.total_price}</div>
+                          </>
+                        )}
+                      </div>
+                    </div>
+                    {links && links.length > 0 && (
+                      <div className="mt-3 flex flex-wrap gap-2">
+                        {links.slice(0, 3).map((l: any, idx: number) => (
+                          <a key={idx} href={l.url} target="_blank" rel="noreferrer" className="btn-secondary text-xs">
+                            Book on {l.platform}
+                          </a>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )
+              })()}
+
               {/* Recommended hotel summary */}
               {tripPlan && (() => {
                 const recs = getHotelRecommendations(tripPlan)
@@ -959,23 +1253,7 @@ export function TripDetails() {
                 )
               })()}
 
-              {/* Generated Trip Plan */}
-              {tripPlan && (
-                <div className="card">
-                  <div className="flex items-center space-x-2 mb-4">
-                    <CheckCircle className="h-5 w-5 text-green-600" />
-                    <h3 className="text-lg font-bold text-gray-900">Generated Trip Plan</h3>
-                  </div>
-                  
-                  <div className="bg-gray-50 rounded-lg p-4 whitespace-pre-wrap text-sm text-gray-700 max-h-96 overflow-y-auto">
-                    {tripPlan.agent_response}
-                  </div>
-                  
-                  <div className="mt-4 text-xs text-gray-500">
-                    Generated on {new Date(tripPlan.saved_at || Date.now()).toLocaleDateString()}
-                  </div>
-                </div>
-              )}
+              {/* Removed Generated Trip Plan section to avoid duplication */}
 
               {/* No Trip Plan Message */}
               {!tripPlan && trip.itinerary.length === 0 && (

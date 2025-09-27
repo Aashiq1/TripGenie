@@ -6,7 +6,8 @@ from app.services.amadeus_hotels import (
     get_hotel_offers, 
     assign_rooms_smartly, 
     calculate_total_accommodation_cost,
-    get_standard_room_types
+    get_standard_room_types,
+    get_best_room_price_for_hotel
 )
 from app.services.google_places_service import GooglePlacesService
 from app.services.amadeus_location_lookup import iata_to_city_name
@@ -109,11 +110,51 @@ class HotelSearchTool:
                             available_rooms
                         )
                         
-                        # Calculate total costs
-                        total_costs = calculate_total_accommodation_cost(
-                            room_assignment,
-                            num_nights
-                        )
+                        # Calculate initial total costs
+                        total_costs = calculate_total_accommodation_cost(room_assignment, num_nights)
+
+                        # === Reprice after assignment using occupancy-aware per-room fetching ===
+                        try:
+                            hotel_id = hotel.get('hotel_id') or hotel.get('hotelId')
+                            if hotel_id:
+                                # Determine needed room counts by standardized type
+                                need_single = 0
+                                need_double = 0
+                                for a in room_assignment.get('assignments', []):
+                                    rt = (a.get('room_type') or '').strip().lower()
+                                    cap = int(a.get('capacity') or 0)
+                                    if rt == 'single' or cap == 1:
+                                        need_single += 1
+                                    elif rt == 'double' or cap == 2:
+                                        need_double += 1
+
+                                # Fetch per-night prices for single (adults=1) and double (adults=2)
+                                p_single = get_best_room_price_for_hotel(hotel_id, check_in, check_out, adults=1)
+                                p_double = get_best_room_price_for_hotel(hotel_id, check_in, check_out, adults=2)
+
+                                # If we have at least one relevant price, recompute totals
+                                if ((need_single and isinstance(p_single, (int, float))) or 
+                                    (need_double and isinstance(p_double, (int, float)))):
+                                    per_night_total = 0.0
+                                    if need_single and isinstance(p_single, (int, float)):
+                                        per_night_total += float(p_single) * float(need_single)
+                                    if need_double and isinstance(p_double, (int, float)):
+                                        per_night_total += float(p_double) * float(need_double)
+
+                                    # Update totals
+                                    total_costs['total_group_cost'] = per_night_total * float(num_nights)
+                                    # Update per-person nightly cost proportionally
+                                    group_size_safe = max(len(accommodation_details), 1)
+                                    fair_pp_per_night = per_night_total / group_size_safe if per_night_total > 0 else 0
+                                    for person in total_costs.get('individual_costs', {}).values():
+                                        person['cost_per_night'] = fair_pp_per_night
+                                        person['total_cost'] = fair_pp_per_night * float(num_nights)
+
+                                    # Also update room_assignment aggregate
+                                    room_assignment['total_cost_per_night'] = per_night_total
+                        except Exception:
+                            # If repricing fails, keep initial totals
+                            pass
                         
                         option_payload = {
                             'hotel_name': hotel['hotel_name'],
