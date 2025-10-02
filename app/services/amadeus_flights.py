@@ -15,6 +15,7 @@ amadeus = Client(
     client_secret=os.getenv("AMADEUS_CLIENT_SECRET"),
     hostname='test'  # Use test environment (change to 'production' for real pricing with production credentials)
 )
+_AMADEUS_ENV_LABEL = (os.getenv("AMADEUS_ENV") or "test").strip().lower() or "test"
 
 # === Simple in-memory TTL cache for flight offers ===
 _OFFERS_CACHE: Dict[str, Any] = {}
@@ -57,7 +58,9 @@ def get_flight_offers(
     return_date: str,
     num_adults: int = 1,  # Default 1, but will be overridden by group size
     travel_class: str = "ECONOMY",  # Default economy
-    nonstop_only: bool = False  # Default allow connections
+    nonstop_only: bool = False,  # Default allow connections
+    disable_cache: bool | None = None,
+    strict_mode: bool | None = None
 ):
     """
     Fetch round-trip flight offers from Amadeus for a GROUP.
@@ -75,12 +78,30 @@ def get_flight_offers(
         List[Dict]: List of flight offers with airline, price, and duration.
     """
     logger.info(f"Searching flights: {departure_city} -> {destination}, {departure_date} to {return_date}, {num_adults} adults, {travel_class}, nonstop_only: {nonstop_only}")
+    # Resolve toggles
+    env_disable_cache = str(os.getenv("DISABLE_FLIGHT_CACHE", "")).strip().lower() in {"1", "true", "yes", "on"}
+    env_strict = str(os.getenv("STRICT_MODE", "")).strip().lower() in {"1", "true", "yes", "on"}
+    disable_cache = bool(disable_cache) or env_disable_cache
+    strict_mode = bool(strict_mode) or env_strict
     # Cache lookup
     key = _cache_key(departure_city, destination, departure_date, return_date, num_adults, travel_class, nonstop_only)
-    cached = _cache_get(key)
-    if cached is not None:
-        logger.debug("Returning cached flight offers")
-        return cached
+    if not disable_cache:
+        cached = _cache_get(key)
+        if cached is not None:
+            logger.debug("Returning cached flight offers")
+            # annotate source for traceability
+            annotated: List[Dict[str, Any]] = []
+            try:
+                for item in cached:
+                    if isinstance(item, dict):
+                        c = dict(item)
+                        c.setdefault("source", "cache")
+                        c.setdefault("amadeus_env", _AMADEUS_ENV_LABEL)
+                        c.setdefault("cache_key", key)
+                        annotated.append(c)
+                return annotated
+            except Exception:
+                return cached
     
     try:
         # Build search parameters
@@ -133,7 +154,10 @@ def get_flight_offers(
                     "stops": len(offer['itineraries'][0]['segments']) - 1,
                     "flight_number": _extract_flight_number(offer['itineraries'][0]['segments'][0]),
                     "airline_code": offer['validatingAirlineCodes'][0],
-                    "origin": departure_city
+                    "origin": departure_city,
+                    "source": "amadeus_live",
+                    "amadeus_env": _AMADEUS_ENV_LABEL,
+                    "cache_key": key
                 }
                 
                 # Create unique key for this flight
@@ -461,6 +485,8 @@ def _get_no_flights_response(departure_city, destination, departure_date, return
         "dates_searched": f"{departure_date} to {return_date}",
         "search_type": "nonstop only" if nonstop_only else "all flights",
         "suggestions": suggestions,
+        "source": "amadeus_live",
+        "amadeus_env": _AMADEUS_ENV_LABEL,
         "alternative_search_urls": [
             f"https://www.google.com/flights?q={departure_city}+to+{destination}",
             f"https://www.kayak.com/flights/{departure_city}-{destination}/{departure_date}/{return_date}",
@@ -538,7 +564,9 @@ def _get_mock_flight_data(departure_city: str, destination: str, departure_date:
             "stops": 0,
             "origin": departure_city,
             "_mock_data": True,  # Flag to indicate this is mock data
-            "_note": "Mock data - Amadeus test environment unavailable"
+            "_note": "Mock data - Amadeus test environment unavailable",
+            "source": "mock",
+            "amadeus_env": _AMADEUS_ENV_LABEL
         })
     
     return mock_flights

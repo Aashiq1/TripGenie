@@ -436,8 +436,14 @@ class AgentResponseParser:
         if not activities:
             lines = day_content.strip().split('\n')
             for line in lines:
-                if line.strip() and not line.strip().startswith(('Total', 'Day')):
-                    activity = self._parse_activity_line(line, day_num)
+                if not line.strip() or line.strip().startswith(('Total', 'Day')):
+                    continue
+                # Split single line that lists multiple activities separated by commas/"and"
+                fragments = re.split(r",\s+|\s+and\s+", line.strip())
+                for frag in fragments:
+                    if not frag:
+                        continue
+                    activity = self._parse_activity_line(frag, day_num)
                     if activity:
                         activities.append(activity)
         
@@ -518,7 +524,11 @@ class AgentResponseParser:
             # If no bold formatting, try to extract before first emoji or special character
             name_parts = re.split(r'[📍💰⭐⏱️📝🌐\$]', line)
             if name_parts:
-                activity['name'] = name_parts[0].strip(' -–,')
+                candidate = name_parts[0].strip(' -–,')
+                # Clean leading verbs like "visit", "dine at", "relax at", "explore", etc.
+                candidate = re.sub(r'^(have\s+(breakfast|lunch|dinner)\s+at\s+)', '', candidate, flags=re.IGNORECASE)
+                candidate = re.sub(r'^(visit|dine|relax|explore|see|tour|walk|stroll|shop|enjoy)\s+(at|in|around|through|the)?\s*', '', candidate, flags=re.IGNORECASE)
+                activity['name'] = candidate.strip(' -–,')
         
         # Only proceed if we have a valid name
         if not activity['name'] or len(activity['name']) < 2:

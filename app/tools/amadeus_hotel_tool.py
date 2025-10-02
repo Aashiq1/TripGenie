@@ -7,7 +7,8 @@ from app.services.amadeus_hotels import (
     assign_rooms_smartly, 
     calculate_total_accommodation_cost,
     get_standard_room_types,
-    get_best_room_price_for_hotel
+    get_best_room_price_for_hotel,
+    generate_candidate_packings
 )
 from app.services.google_places_service import GooglePlacesService
 from app.services.amadeus_location_lookup import iata_to_city_name
@@ -75,6 +76,18 @@ class HotelSearchTool:
                 
                 if not hotels:
                     # Fallback to estimates if API fails
+                    strict = str(os.getenv("HOTEL_STRICT", "")).strip().lower() in {"1", "true", "yes", "on"}
+                    if strict:
+                        results[destination] = {
+                            'hotels': [],
+                            'search_parameters': {
+                                'destination': destination,
+                                'accommodation_style': group_accommodation_style,
+                                'group_size': len(accommodation_details),
+                                'api_status': 'no_results_strict'
+                            }
+                        }
+                        continue
                     results[destination] = self._generate_fallback_estimate(
                         destination,
                         accommodation_details,
@@ -117,52 +130,74 @@ class HotelSearchTool:
                         try:
                             hotel_id = hotel.get('hotel_id') or hotel.get('hotelId')
                             if hotel_id:
-                                # Determine needed room counts by standardized type
-                                need_single = 0
-                                need_double = 0
+                                # Primary occupancy vector from assignment
+                                vector: list[int] = []
                                 for a in room_assignment.get('assignments', []):
-                                    rt = (a.get('room_type') or '').strip().lower()
                                     cap = int(a.get('capacity') or 0)
-                                    if rt == 'single' or cap == 1:
-                                        need_single += 1
-                                    elif rt == 'double' or cap == 2:
-                                        need_double += 1
+                                    if cap >= 1:
+                                        vector.append(cap)
+                                if not vector:
+                                    vector = [len(accommodation_details) or 1]
 
-                                # Fetch per-night prices for single (adults=1) and double (adults=2)
-                                p_single = get_best_room_price_for_hotel(hotel_id, check_in, check_out, adults=1)
-                                p_double = get_best_room_price_for_hotel(hotel_id, check_in, check_out, adults=2)
+                                # Try the assignment vector first; then a few candidate packings
+                                vectors = [vector] + generate_candidate_packings(accommodation_details)
 
-                                # If we have at least one relevant price, recompute totals
-                                if ((need_single and isinstance(p_single, (int, float))) or 
-                                    (need_double and isinstance(p_double, (int, float)))):
-                                    per_night_total = 0.0
-                                    if need_single and isinstance(p_single, (int, float)):
-                                        per_night_total += float(p_single) * float(need_single)
-                                    if need_double and isinstance(p_double, (int, float)):
-                                        per_night_total += float(p_double) * float(need_double)
+                                best_per_night_total = None
+                                for occ in vectors:
+                                    per_night_sum = 0.0
+                                    feasible = True
+                                    for adults in occ:
+                                        price = get_best_room_price_for_hotel(hotel_id, check_in, check_out, adults=adults)
+                                        if isinstance(price, (int, float)):
+                                            per_night_sum += float(price)
+                                        else:
+                                            feasible = False
+                                            break
+                                    if feasible:
+                                        if best_per_night_total is None or per_night_sum < best_per_night_total:
+                                            best_per_night_total = per_night_sum
 
-                                    # Update totals
-                                    total_costs['total_group_cost'] = per_night_total * float(num_nights)
-                                    # Update per-person nightly cost proportionally
+                                if isinstance(best_per_night_total, (int, float)):
+                                    total_costs['total_group_cost'] = float(best_per_night_total) * float(num_nights)
                                     group_size_safe = max(len(accommodation_details), 1)
-                                    fair_pp_per_night = per_night_total / group_size_safe if per_night_total > 0 else 0
+                                    fair_pp_per_night = float(best_per_night_total) / group_size_safe if best_per_night_total > 0 else 0.0
                                     for person in total_costs.get('individual_costs', {}).values():
                                         person['cost_per_night'] = fair_pp_per_night
                                         person['total_cost'] = fair_pp_per_night * float(num_nights)
-
-                                    # Also update room_assignment aggregate
-                                    room_assignment['total_cost_per_night'] = per_night_total
+                                    room_assignment['total_cost_per_night'] = float(best_per_night_total)
                         except Exception:
                             # If repricing fails, keep initial totals
                             pass
                         
+                        # Build human-friendly room breakdown
+                        room_counts: Dict[str, int] = {}
+                        room_details: List[Dict] = []
+                        for a in room_assignment.get('assignments', []):
+                            rtype = (a.get('room_type') or 'unknown').lower()
+                            room_counts[rtype] = room_counts.get(rtype, 0) + 1
+                            room_details.append({
+                                'room_type': rtype,
+                                'capacity': a.get('capacity'),
+                                'occupants': a.get('occupants'),
+                                'occupant_names': a.get('occupant_names'),
+                                'cost_per_person': a.get('cost_per_person'),
+                                'total_room_cost': a.get('total_room_cost')
+                            })
+
                         option_payload = {
                             'hotel_name': hotel['hotel_name'],
                             'hotel_rating': hotel['hotel_rating'],
                             'address': hotel['address'],
                             'room_configuration': room_assignment['summary'],
+                            'room_assignments': room_assignment.get('assignments', []),
+                            'room_breakdown': {
+                                'counts': room_counts,
+                                'details': room_details
+                            },
                             'total_cost_per_night': room_assignment['total_cost_per_night'],
                             'total_trip_cost': total_costs['total_group_cost'],
+                            'source': hotel.get('source', 'amadeus_live'),
+                            'amadeus_env': hotel.get('amadeus_env', ''),
                             'individual_costs': [
                                 {
                                     'name': details['name'],

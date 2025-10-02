@@ -16,6 +16,7 @@ amadeus = Client(
     client_secret=os.getenv("AMADEUS_CLIENT_SECRET"),
     hostname='test'  # Use test environment endpoints for test credentials
 )
+_AMADEUS_ENV_LABEL = (os.getenv("AMADEUS_ENV") or "test").strip().lower() or "test"
 
 def get_hotel_offers(
     city_code: str,
@@ -112,7 +113,10 @@ def get_hotel_offers(
                 return (dist_key, -int(c.get('rating') or 0))
             candidates.sort(key=_cand_sort_key)
             # Trim to top-K before heavy offers calls
-            TOP_K = 8
+            try:
+                TOP_K = int(os.getenv('HOTEL_TOP_K', '').strip() or 15)
+            except Exception:
+                TOP_K = 15
             filtered_hotels = [c['hotelId'] for c in candidates[:TOP_K]]
         
         # Step 2: Search for offers at these hotels - TRY INDIVIDUALLY
@@ -201,7 +205,9 @@ def get_hotel_offers(
                         'address': hotel_info.get('address', {}).get('lines', ['Address not available'])[0],
                         'room_types_available': room_types_available,
                         'accommodation_type': accommodation_preference,
-                        'num_nights': num_nights
+                        'num_nights': num_nights,
+                        'source': 'amadeus_live',
+                        'amadeus_env': _AMADEUS_ENV_LABEL
                     }
 
                     # Compute distance to anchor if provided
@@ -584,3 +590,45 @@ def get_best_room_price_for_hotel(
         return None
     except Exception:
         return None
+
+
+def generate_candidate_packings(users: List[Dict]) -> List[List[int]]:
+    """
+    Generate a small set of occupancy vectors (e.g., [2,2,1]) for the group.
+    Heuristic: singles first, then greedy fill by capacity (2..4), with basic rebalances.
+    """
+    total = len(users or [])
+    if total <= 0:
+        return []
+    packings: List[List[int]] = []
+    # Baselines
+    if total == 1:
+        packings.append([1])
+    elif total == 2:
+        packings.extend([[2], [1,1]])
+    elif total == 3:
+        packings.extend([[2,1], [1,1,1]])
+    elif total == 4:
+        packings.extend([[2,2], [3,1], [1,1,1,1]])
+    elif total == 5:
+        packings.extend([[2,2,1], [3,1,1]])
+    elif total == 6:
+        packings.extend([[2,2,2], [3,3], [4,2]])
+    else:
+        # Greedy: fill by 2s, handle remainder
+        twos = total // 2
+        rem = total % 2
+        vec = [2] * twos + ([1] if rem else [])
+        packings.append(vec)
+        # Rebalance: try a 3 if remainder 1 with enough people
+        if rem == 1 and twos >= 1:
+            packings.append([3] + [2] * (twos - 1) + [1])
+    # Deduplicate
+    seen = set()
+    unique: List[List[int]] = []
+    for v in packings:
+        key = tuple(sorted(v, reverse=True))
+        if key not in seen:
+            seen.add(key)
+            unique.append(list(key))
+    return unique[:5]

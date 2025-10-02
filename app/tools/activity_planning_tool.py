@@ -115,8 +115,8 @@ class ActivityPlanningTool:
                 start_date if destination_coords else None, weather_by_date
             )
             
-            # Format response
-            return self._format_itinerary_response(daily_itinerary, destination, trip_duration)
+            # Return strict JSON to ensure deterministic parsing downstream
+            return self._format_itinerary_json(daily_itinerary, destination, trip_duration)
             
         except json.JSONDecodeError:
             return "Error: Input must be valid JSON with destination, interests, trip_duration_days, travel_style, trip_pace, budget_per_person"
@@ -349,54 +349,38 @@ class ActivityPlanningTool:
             
             return time_slots[min(activity_index, len(time_slots)-1)]
     
-    def _format_itinerary_response(self, daily_itinerary: Dict[int, List[Dict]], destination: str, trip_duration: int) -> str:
-        """Format the itinerary into a readable string response."""
-        response = f"\n**ACTIVITY ITINERARY FOR {destination.upper()}**\n"
-        response += f"Duration: {trip_duration} days | Source: Google Places API\n\n"
-        
-        total_estimated_cost = 0
-        
+    def _format_itinerary_json(self, daily_itinerary: Dict[int, List[Dict]], destination: str, trip_duration: int) -> str:
+        """Return itinerary as strict JSON for deterministic parsing."""
+        total_estimated_cost = 0.0
+        provider_counts: Dict[str, int] = {}
+        # Transform to day_key structure expected by frontend
+        daily_block: Dict[str, Dict[str, Any]] = {}
         for day, activities in daily_itinerary.items():
-            response += f"**Day {day}:**\n"
-            
-            day_cost = 0
+            day_key = f"day_{day}"
+            day_cost = 0.0
+            norm_activities: List[Dict[str, Any]] = []
             for activity in activities:
-                cost = activity.get("estimated_cost", 0)
+                cost = float(activity.get("estimated_cost", 0) or 0)
                 day_cost += cost
                 total_estimated_cost += cost
-                
-                response += f"• **{activity['name']}**\n"
-                response += f"  📍 {activity['location']['address']}\n"
-                response += f"  💰 ${cost:.0f} per person"
-                
-                if activity.get("rating"):
-                    response += f" | ⭐ {activity['rating']}"
-                
-                if activity.get("duration"):
-                    response += f" | ⏱️ {activity['duration']}h"
-                
-                response += f"\n  📝 {activity.get('description', 'Activity description')}\n"
-                
-                if activity.get("website"):
-                    response += f"  🌐 {activity['website']}\n"
-                
-                response += "\n"
-            
-            response += f"**Day {day} Total: ${day_cost:.0f} per person**\n\n"
-        
-        response += f"**TOTAL ACTIVITY COST: ${total_estimated_cost:.0f} per person**\n\n"
-        
-        # Add provider information
-        provider_counts = {}
-        for day_activities in daily_itinerary.values():
-            for activity in day_activities:
                 provider = activity.get("provider", "Unknown")
                 provider_counts[provider] = provider_counts.get(provider, 0) + 1
-        
-        response += "**ACTIVITY SOURCES:**\n"
-        for provider, count in provider_counts.items():
-            response += f"• {provider}: {count} activities\n"
-        
-        response += "\n**FUTURE INTEGRATIONS:** GetYourGuide, Viator APIs coming soon for bookable tours and experiences\n\n"
-        
-        return response
+                norm_activities.append(activity)
+            daily_block[day_key] = {
+                "day_number": day,
+                "day_label": f"Day {day}",
+                "activities": norm_activities,
+                "day_total_estimated_cost": day_cost,
+            }
+
+        payload = {
+            "format": "tripgenie.activities.v1",
+            "destination": destination,
+            "trip_duration_days": trip_duration,
+            "daily_itinerary": daily_block,
+            "summary": {
+                "total_estimated_cost": total_estimated_cost,
+                "providers": provider_counts,
+            },
+        }
+        return json.dumps(payload, ensure_ascii=False)

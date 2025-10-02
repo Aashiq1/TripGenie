@@ -1014,6 +1014,36 @@ export function TripDetails() {
                           {recs.recommended.address && (
                             <div className="mt-2 text-sm text-gray-600">{recs.recommended.address}</div>
                           )}
+                          {/* Room breakdown and per-person split (summary tab) */}
+                          {recs.recommended?.room_breakdown && (
+                            <div className="mt-3 text-sm text-gray-700">
+                              <div>
+                                <b>Rooms</b>: {Object.entries(recs.recommended.room_breakdown.counts || {})
+                                  .map(([t, n]) => `${n} ${t}`)
+                                  .join(', ')}
+                              </div>
+                              {Array.isArray(recs.recommended.room_breakdown.details) && (
+                                <ul className="list-disc ml-5 mt-1">
+                                  {recs.recommended.room_breakdown.details.map((r: any, i: number) => (
+                                    <li key={i}>
+                                      {r.room_type} (cap {r.capacity}): {Array.isArray(r.occupant_names) ? r.occupant_names.join(', ') : ''}
+                                      {r.total_room_cost != null ? ` — room total: $${Math.round(r.total_room_cost)}` : ''}
+                                    </li>
+                                  ))}
+                                </ul>
+                              )}
+                            </div>
+                          )}
+                          {Array.isArray(recs.recommended?.individual_costs) && (
+                            <div className="mt-3 text-sm text-gray-700">
+                              <b>Per‑person costs</b>
+                              <ul className="list-disc ml-5 mt-1">
+                                {recs.recommended.individual_costs.map((p: any, i: number) => (
+                                  <li key={i}>{(p.name || p.user_name || p.user_email)}: ${Math.round(p.total_cost)} ({p.room_type})</li>
+                                ))}
+                              </ul>
+                            </div>
+                          )}
                         </div>
                       )}
                       {recs.alternates && recs.alternates.length > 0 && (
@@ -1221,6 +1251,36 @@ export function TripDetails() {
                             <div className="font-semibold text-gray-900">${recs.recommended.total_trip_cost}</div>
                           </div>
                         </div>
+                        {/* Room breakdown and per-person split (itinerary tab) */}
+                        {recs.recommended?.room_breakdown && (
+                          <div className="mt-2 text-xs text-gray-700">
+                            <div>
+                              <b>Rooms</b>: {Object.entries(recs.recommended.room_breakdown.counts || {})
+                                .map(([t, n]) => `${n} ${t}`)
+                                .join(', ')}
+                            </div>
+                            {Array.isArray(recs.recommended.room_breakdown.details) && (
+                              <ul className="list-disc ml-5 mt-1">
+                                {recs.recommended.room_breakdown.details.map((r: any, i: number) => (
+                                  <li key={i}>
+                                    {r.room_type} (cap {r.capacity}): {Array.isArray(r.occupant_names) ? r.occupant_names.join(', ') : ''}
+                                    {r.total_room_cost != null ? ` — room total: $${Math.round(r.total_room_cost)}` : ''}
+                                  </li>
+                                ))}
+                              </ul>
+                            )}
+                          </div>
+                        )}
+                        {Array.isArray(recs.recommended?.individual_costs) && (
+                          <div className="mt-2 text-xs text-gray-700">
+                            <b>Per‑person costs</b>
+                            <ul className="list-disc ml-5 mt-1">
+                              {recs.recommended.individual_costs.map((p: any, i: number) => (
+                                <li key={i}>{(p.name || p.user_name || p.user_email)}: ${Math.round(p.total_cost)} ({p.room_type})</li>
+                              ))}
+                            </ul>
+                          </div>
+                        )}
                       </div>
                     )}
                     {recs.alternates && recs.alternates.length > 0 && (
