@@ -1,7 +1,8 @@
 import axios, { AxiosResponse } from 'axios'
 import { User } from '../stores/authStore'
 
-const API_BASE_URL = 'http://localhost:8000'
+// Prefer Vite-provided env var; default to '/api' so we can proxy via Nginx
+const API_BASE_URL = (import.meta as any)?.env?.VITE_API_BASE_URL || '/api'
 
 // Create axios instance
 const api = axios.create({

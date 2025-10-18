@@ -1,0 +1,33 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+*.egg-info/
+.venv/
+venv/
+.env
+
+# Node / Frontend
+frontend/node_modules/
+frontend/dist/
+
+# VCS
+.git/
+.gitignore
+
+# OS / Editor
+.DS_Store
+.idea/
+.vscode/
+
+# Test/Cache
+.pytest_cache/
+.mypy_cache/
+.cache/
+
+# Docker
+Dockerfile*
+.dockerignore
+
